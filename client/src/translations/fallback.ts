@@ -1,0 +1,60 @@
+// Fallback translations for incomplete language implementations
+import { Translation } from './index';
+
+export const fallbackTranslations: Partial<Translation> = {
+  // Common missing translations
+  unblock: "unblock",
+  select: "Select",
+  saveChanges: "Save Changes",
+  showHide: "show/hide",
+  showIfUnread: "show if unread",
+  conversations: "conversations",
+  remove: "remove",
+  customSignature: "Custom signature",
+  inLabelList: "In label list:",
+  
+  // Account settings translations
+  importEmailsAndContacts: "Import emails and contacts from other email accounts",
+  importEmailsAndContactsDescription: "Import emails and contacts from other email accounts",
+  forwardingIsDisabled: "Forwarding is disabled.",
+  forwardingIsEnabled: "Forwarding is enabled. A copy of incoming mail will be forwarded to",
+  addAForwardingAddress: "Add a forwarding address",
+  blockEmailAddress: "Block Email Address",
+  enterEmailAddressToBlock: "Enter email address to block",
+  blockEmail: "Block Email",
+  emailAddress: "Email address:",
+  gmailUser: "Gmail User",
+  defaultLabel: "(default)",
+  verified: "Verified",
+  
+  // Compose modal translations
+  newMessage: "New message",
+  recipients: "Recipients",
+  carbonCopyRecipients: "Carbon copy recipients",
+  blindCarbonCopyRecipients: "Blind carbon copy recipients",
+  scheduleSend: "Schedule send",
+  attachFiles: "Attach files",
+  insertLink: "Insert link",
+  insertEmoji: "Insert emoji",
+  checkSpelling: "Check spelling",
+  setUpTimeToMeet: "Set up a time to meet",
+  addLabel: "Add label",
+  plainTextMode: "Plain text mode",
+  richFormatting: "Rich formatting",
+  defaultFullScreen: "Default full screen",
+  confidentialMode: "Confidential mode",
+  confidentialModeIsOn: "Confidential mode is on",
+  virtualKeyboard: "Virtual keyboard",
+  inputToolsOptions: "Input tools options",
+  textFormatting: "Text formatting",
+  moreOptions: "More options",
+  discardDraft: "Discard draft",
+  printDraft: "Print draft",
+  selectDate: "Select date",
+  selectTime: "Select time",
+  customDateTime: "Custom date & time",
+  laterToday: "Later today",
+  tomorrowMorning: "Tomorrow morning",
+  mondayMorning: "Monday morning",
+  customTime: "Custom time"
+};

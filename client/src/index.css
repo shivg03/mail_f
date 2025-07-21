@@ -1,0 +1,364 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Reply message formatting */
+.reply-content {
+  white-space: pre-wrap;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.reply-content::after {
+  content: "";
+  display: block;
+  position: relative;
+}
+
+/* Style for original message section in replies */
+textarea:has-text("--- Original Message ---"),
+.original-message-section {
+  position: relative;
+}
+
+/* Add left border styling for original message in textarea */
+textarea[value*="--- Original Message ---"] {
+  background-image: linear-gradient(
+    to right,
+    #e5e7eb 0px,
+    #e5e7eb 4px,
+    transparent 4px,
+    transparent 100%
+  );
+  background-repeat: repeat-y;
+  background-position: 0 0;
+  padding-left: 16px;
+}
+
+/* Responsive email interface utilities */
+@layer utilities {
+  .email-row-mobile {
+    @apply px-2 py-2 border-b hover:bg-accent transition-all duration-200;
+  }
+  
+  .email-content-mobile {
+    @apply text-xs truncate;
+  }
+  
+  .toolbar-button-mobile {
+    @apply p-1 hover:bg-accent rounded-md transition-colors duration-200;
+  }
+  
+  .sidebar-collapsed-mobile {
+    @apply hidden md:flex;
+  }
+  
+  .search-bar-mobile {
+    @apply h-8 text-xs placeholder:text-xs;
+  }
+  
+  .navigation-item-mobile {
+    @apply px-2 py-2 text-xs font-medium;
+  }
+}
+
+/* Enhanced responsive breakpoints */
+@media (max-width: 480px) {
+  .compose-button {
+    @apply w-10 h-10 rounded-full p-0 justify-center;
+  }
+  
+  .email-detail-toolbar {
+    @apply gap-1 p-2;
+  }
+  
+  .filter-dropdown {
+    @apply left-0 right-0 max-h-80 overflow-y-auto;
+  }
+}
+
+/* Tablet specific optimizations */
+@media (min-width: 481px) and (max-width: 1024px) {
+  .sidebar-tablet {
+    @apply w-48;
+  }
+  
+  .email-list-tablet {
+    @apply px-3 py-2;
+  }
+  
+  .toolbar-tablet {
+    @apply px-4 py-2;
+  }
+}
+
+@media print {
+  /* Hide everything by default */
+  body * {
+    visibility: hidden;
+  }
+
+  /* Show only printable email content */
+  #printable-email, #printable-email * {
+    visibility: visible;
+  }
+
+  #printable-email {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    overflow: visible !important;
+  }
+
+  html, body {
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  /* Allow content to break properly between pages */
+  #printable-email {
+    page-break-before: auto;
+    page-break-after: auto;
+    page-break-inside: auto;
+  }
+
+  #printable-email * {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* Remove margins that may cut off content */
+  @page {
+    /* margin: 1in; Adjust as needed */
+    size: auto;
+  }
+}
+
+
+/* Set Poppins as default font with emoji support */
+body {
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji';
+}
+
+/* Reduce boldness of optgroup labels */
+optgroup {
+  font-weight: 500 !important;
+  color: hsl(var(--muted-foreground)) !important;
+}
+
+:root {
+  --background: 0 0% 100%;
+  --foreground: 220 13% 9%;
+  --muted: 220 14% 96%;
+  --muted-foreground: 220 9% 46%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 220 13% 9%;
+  --card: 0 0% 100%;
+  --card-foreground: 220 13% 9%;
+  --border: 220 13% 91%;
+  --input: 220 13% 91%;
+  --primary: 221 83% 53%;
+  --primary-foreground: 210 40% 98%;
+  --secondary: 220 14% 96%;
+  --secondary-foreground: 220 9% 15%;
+  --accent: 220 14% 96%;
+  --accent-foreground: 220 9% 15%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 210 40% 98%;
+  --ring: 221 83% 53%;
+  --radius: 0.5rem;
+  
+  /* Global font size variable */
+  --gmail-font-size: 14px;
+  
+  /* Global text color variable */
+  --gmail-text-color: #000000;
+  
+  /* Modern Orange & White Theme */
+  --orange-50: 25 100% 97%; /* #fff7ed */
+  --orange-100: 24 100% 93%; /* #ffedd5 */
+  --orange-200: 24 100% 85%; /* #fed7aa */
+  --orange-300: 24 96% 77%; /* #fdba74 */
+  --orange-400: 24 94% 65%; /* #fb923c */
+  --orange-500: 24 95% 53%; /* #f97316 */
+  --orange-600: 20 91% 48%; /* #ea580c */
+  --orange-700: 17 88% 40%; /* #c2410c */
+  --orange-800: 15 79% 34%; /* #9a3412 */
+  --orange-900: 15 75% 28%; /* #7c2d12 */
+  
+  /* Modern neutrals */
+  --neutral-50: 210 20% 98%; /* #f8fafc */
+  --neutral-100: 210 14% 93%; /* #f1f5f9 */
+  --neutral-200: 214 13% 87%; /* #e2e8f0 */
+  --neutral-300: 213 13% 78%; /* #cbd5e1 */
+  --neutral-400: 215 14% 60%; /* #94a3b8 */
+  --neutral-500: 215 16% 47%; /* #64748b */
+  --neutral-600: 215 19% 35%; /* #475569 */
+  --neutral-700: 215 25% 27%; /* #334155 */
+  --neutral-800: 217 33% 17%; /* #1e293b */
+  --neutral-900: 222 84% 5%; /* #0f172a */
+}
+
+.dark {
+  --background: 0 0% 0%;
+  --foreground: 0 0% 100%;
+  --muted: 0 0% 0%;
+  --muted-foreground: 0 0% 100%;
+  --popover: 0 0% 0%;
+  --popover-foreground: 0 0% 100%;
+  --card: 0 0% 0%;
+  --card-foreground: 0 0% 100%;
+  --border: 0 0% 20%;
+  --input: 0 0% 0%;
+  --primary: 207 90% 54%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 0 0% 0%;
+  --secondary-foreground: 0 0% 100%;
+  --accent: 0 0% 10%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 0 0% 100%;
+  --ring: 240 4.9% 83.9%;
+  --radius: 0.5rem;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply font-sans antialiased;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    min-height: 100vh;
+    font-size: var(--gmail-font-size);
+  }
+  
+  /* Apply global font size and text color to all text elements */
+  p, span, div, label, input, textarea, button, a, td, th, li {
+    font-size: var(--gmail-font-size);
+    color: var(--gmail-text-color);
+  }
+  
+  /* Override specific text size classes to use the global font size */
+  .text-sm {
+    font-size: calc(var(--gmail-font-size) * 0.875);
+  }
+  
+  .text-xs {
+    font-size: calc(var(--gmail-font-size) * 0.75);
+  }
+  
+  .text-lg {
+    font-size: calc(var(--gmail-font-size) * 1.125);
+  }
+  
+  .text-xl {
+    font-size: calc(var(--gmail-font-size) * 1.25);
+  }
+  
+  /* Override text color classes to use global text color */
+  .text-gray-700, .text-gray-800, .text-gray-900, .text-black {
+    color: var(--gmail-text-color) !important;
+  }
+  
+  /* Apply text color to specific elements that might not inherit */
+  h1, h2, h3, h4, h5, h6 {
+    color: var(--gmail-text-color);
+  }
+  
+  /* Gmail specific text elements */
+  .email-list span, .email-list div, .sidebar span, .sidebar div {
+    color: var(--gmail-text-color);
+  }
+}
+
+@layer components {
+  .sidebar-item {
+    @apply transition-all duration-200 ease-in-out rounded-lg;
+  }
+  
+  .sidebar-item:hover {
+    @apply bg-secondary;
+  }
+  
+  .keyboard-key {
+    @apply bg-card border border-border rounded-md px-3 py-2 text-sm font-medium hover:bg-accent active:bg-muted transition-colors min-w-0 select-none shadow-sm;
+    min-width: 40px;
+    height: 40px;
+  }
+  
+  .modern-card {
+    @apply bg-card border border-border rounded-lg shadow-sm;
+  }
+  
+  .modern-button {
+    @apply bg-primary text-primary-foreground hover:bg-primary/90 font-medium rounded-md transition-colors;
+  }
+  
+  .modern-input {
+    @apply bg-background border border-border rounded-md transition-colors focus:ring-2 focus:ring-ring focus:border-ring;
+  }
+}
+
+/* Custom scrollbar styles */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #dadce0;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #bdc1c6;
+}
+
+/* Loading animation */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in {
+  animation: fadeIn 0.3s ease-out;
+}
+
+/* Email row hover effects */
+.email-row:hover {
+  @apply shadow-md;
+  box-shadow: inset 1px 0 0 #dadce0, inset -1px 0 0 #dadce0, 0 1px 2px 0 rgba(60,64,67,.3), 0 1px 3px 1px rgba(60,64,67,.15);
+}
+
+/* Font Awesome adjustments */
+.fas, .far {
+  font-family: "Font Awesome 6 Free", sans-serif;
+}
+
+.my-select option:hover,
+.my-select option:checked,
+.my-select option:selected {
+  background-color: #ffa184;
+  color: white;
+}
+
+.dark input[type="date"]::-webkit-calendar-picker-indicator,
+.dark input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+}

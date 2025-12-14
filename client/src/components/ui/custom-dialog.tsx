@@ -124,11 +124,9 @@ export function InputDialog({
   const [value, setValue] = useState(defaultValue);
 
   const handleConfirm = () => {
-    if (value.trim()) {
-      onConfirm(value.trim());
-      onClose();
-      setValue("");
-    }
+    onConfirm(value.trim());
+    onClose();
+    setValue("");
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

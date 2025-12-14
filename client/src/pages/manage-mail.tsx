@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useRoute, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Navbar } from "@/components/navbar";
+import { Footer } from "@/components/footer";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -238,7 +239,7 @@ export default function ManageMail() {
     if (!deleteEmailInput) return;
     setIsDeleting(true);
     try {
-      const response = await apiRequest("POST", "/mails/deleteUser", { email: deleteEmailInput });
+      const response = await apiRequest("DELETE", "/mailboxConfig/deleteUser", { email: deleteEmailInput });
       toast({
         title: "Success",
         description: response.data?.message || "User and all mails deleted successfully.",
@@ -322,7 +323,7 @@ export default function ManageMail() {
     return (
       <div className="min-h-screen bg-gray-50">
         <Navbar />
-        <main className="pt-16 min-h-screen">
+        <main className="pt-24 min-h-screen">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
             <div className="text-center">
               <h1 className="text-2xl font-bold text-gray-900 mb-4">
@@ -344,9 +345,9 @@ export default function ManageMail() {
   const options = ["MB", "GB"];
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gray-50 flex flex-col">
       <Navbar />
-      <main className="pt-16 px-4 md:px-8 py-6">
+      <main className="pt-28 px-4 md:px-8 py-6">
         <div className="max-w-2xl mx-auto">
           <Card className="bg-white shadow-sm">
             <CardHeader className="pb-4">
@@ -364,6 +365,10 @@ export default function ManageMail() {
                 </Button>
               </div>
             </CardHeader>
+
+            <p className="text-sm text-gray-500 mb-4 px-6">
+              Use this section to update, configure, or manage your existing MailX email account settings, including username, domain, and other preferences.
+            </p>
 
             <CardContent className="space-y-6">
               <div className="space-y-6">
@@ -436,11 +441,10 @@ export default function ManageMail() {
                                     storageUnit
                                   );
                                 }}
-                                className={`w-20 ${
-                                  storageError
+                                className={`w-20 ${storageError
                                     ? "border-red-500 focus:border-red-500 focus:ring-red-500"
                                     : ""
-                                }`}
+                                  }`}
                                 disabled={storageType !== "limited"}
                                 min="1"
                                 max={storageUnit === "MB" ? 1024 : 1}
@@ -463,18 +467,16 @@ export default function ManageMail() {
                                     );
                                   }}
                                   className="relative inline-flex items-center w-14 h-2 bg-gray-200 rounded-full transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-[#ffa184] focus:ring-offset-2"
-                                  title={`Switch to ${
-                                    storageUnit === "MB" ? "GB" : "MB"
-                                  }`}
+                                  title={`Switch to ${storageUnit === "MB" ? "GB" : "MB"
+                                    }`}
                                 >
                                   <div className="absolute inset-0 rounded-full bg-gradient-to-r from-[#ffa184] via-[#ffc3a0] to-[#ff6b6b] opacity-80"></div>
 
                                   <div
-                                    className={`relative z-10 inline-flex items-center justify-center w-7 h-7 bg-gray-800 rounded-full shadow transform transition-transform duration-300 ease-in-out ${
-                                      storageUnit === "GB"
+                                    className={`relative z-10 inline-flex items-center justify-center w-7 h-7 bg-gray-800 rounded-full shadow transform transition-transform duration-300 ease-in-out ${storageUnit === "GB"
                                         ? "translate-x-8"
                                         : "translate-x-0"
-                                    }`}
+                                      }`}
                                   >
                                     <span className="text-xs font-semibold text-white">
                                       {storageUnit}
@@ -510,13 +512,12 @@ export default function ManageMail() {
 
                 {/* Restrictions */}
                 <div
-                  className={`space-y-4 p-4 border rounded-lg ${
-                    emailAccount?.incoming_suspend ||
-                    emailAccount?.outgoing_suspend ||
-                    emailAccount?.outgoing_hold
+                  className={`space-y-4 p-4 border rounded-lg ${emailAccount?.incoming_suspend ||
+                      emailAccount?.outgoing_suspend ||
+                      emailAccount?.outgoing_hold
                       ? "bg-red-50 border-red-200 animate-pulse"
                       : "bg-gray-50 border-gray-200"
-                  }`}
+                    }`}
                 >
                   <div className="flex items-center space-x-2">
                     <Label className="text-sm font-medium text-gray-700">
@@ -573,13 +574,14 @@ export default function ManageMail() {
 
                 {/* Update Settings */}
                 <div className="space-y-4">
-                  <div className="flex items-center space-x-2 mb-4">
+                  <div className="md:flex md:items-center space-x-2 mb-4">
                     <Checkbox
                       id="stay-on-page"
                       checked={stayOnPage}
                       onCheckedChange={(checked) =>
                         setStayOnPage(checked as boolean)
                       }
+                      className="data-[state=checked]:bg-[#ffa184] w-3 h-3 data-[state=checked]:border-[#ffa184]"
                     />
                     <Label
                       htmlFor="stay-on-page"
@@ -590,7 +592,7 @@ export default function ManageMail() {
                     </Label>
                   </div>
 
-                  <div className="flex items-center justify-between pt-4">
+                  <div className="md:flex md:items-center justify-between pt-4">
                     <Button
                       onClick={handleUpdateSettings}
                       disabled={updateMailSettingsMutation.isPending}
@@ -675,6 +677,7 @@ export default function ManageMail() {
           </Card>
         </div>
       </main>
+      <Footer/>
     </div>
   );
 }

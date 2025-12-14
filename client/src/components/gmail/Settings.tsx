@@ -187,6 +187,11 @@ export default function Settings({
   const [newSendAsEmail, setNewSendAsEmail] = useState("");
   const [newSendAsName, setNewSendAsName] = useState("");
   const [editingEmailId, setEditingEmailId] = useState<number | null>(null);
+  const [userEmail, setUserEmail] = useState("");
+  const [imapPassword, setImapPassword] = useState("");
+  const [hostIMAP, setHostIMAP] = useState("");
+  const [portIMAP, setPortIMAP] = useState("");
+  const [connectionTypeIMAP, setConnectionTypeIMAP] = useState("SSL");
 
   // Forwarding state
   const [forwardingAddresses, setForwardingAddresses] = useState<
@@ -1344,21 +1349,25 @@ export default function Settings({
   };
 
   const handleImportSubmit = async () => {
-    const now = new Date().toISOString();
-    await apiRequest("POST", "/setting/account/import", {
-      mail_Id: mailId,
-      importMailAndContact: {
-        providerEmail,
-        address,
-        password,
-        importStatus: "in_progress",
-        lastImportDate: now,
-        errorMessage: "no error",
-        importProgress: 0,
-      },
-    });
-    setShowImportDialog(false);
-    // Optionally refetch account settings here
+    try {
+      await apiRequest("POST", "/import/import-emails", {
+        userEmail,
+        password: imapPassword,
+        hostIMAP,
+        portIMAP,
+        connectionTypeIMAP,
+        mail_id: mailId,
+      });
+      setShowImportDialog(false);
+      setUserEmail("");
+      setImapPassword("");
+      setHostIMAP("");
+      setPortIMAP("");
+      setConnectionTypeIMAP("SSL");
+      // Optionally show toast or refetch
+    } catch (err) {
+      // Optionally show error toast
+    }
   };
 
   // Add these state hooks near the top of the component, if not already present
@@ -1395,6 +1404,9 @@ export default function Settings({
       description: "Email address has been removed from blocked list.",
     });
   };
+
+  // Add state for new fields
+
 
   return (
     <div className="flex-1 bg-background overflow-hidden">
@@ -2603,28 +2615,17 @@ export default function Settings({
                   <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
                     <div className="bg-white dark:bg-black border rounded-lg p-6 w-full max-w-md mx-4">
                       <h3 className="text-lg font-medium dark:text-white  mb-4">
-                        {t.importMailAndContactsLink}
+                        Import Mails and Contacts
                       </h3>
                       <div className="space-y-4">
-                        <div>
-                          <label className="block text-sm font-medium dark:text-white mb-2">
-                            Email provider:
-                          </label>
-                          <input
-                            value={providerEmail}
-                            onChange={e => setProviderEmail(e.target.value)}
-                            placeholder="Email Provider"
-                            className="w-full border rounded px-3 py-2 text-sm bg-white dark:bg-black dark:text-white"
-                          />
-                        </div>
                         <div>
                           <label className="block text-sm font-medium dark:text-white mb-2">
                             Email address:
                           </label>
                           <input
                             type="email"
-                            value={address}
-                            onChange={e => setAddress(e.target.value)}
+                            value={userEmail}
+                            onChange={e => setUserEmail(e.target.value)}
                             placeholder="your-email@example.com"
                             className="w-full border rounded px-3 py-2 text-sm bg-white dark:bg-black dark:text-white"
                           />
@@ -2635,11 +2636,47 @@ export default function Settings({
                           </label>
                           <input
                             type="password"
-                            value={password}
-                            onChange={e => setPassword(e.target.value)}
+                            value={imapPassword}
+                            onChange={e => setImapPassword(e.target.value)}
                             placeholder="Your account password"
                             className="w-full border rounded px-3 py-2 text-sm bg-white dark:bg-black dark:text-white"
                           />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium dark:text-white mb-2">
+                            IMAP Host:
+                          </label>
+                          <input
+                            value={hostIMAP}
+                            onChange={e => setHostIMAP(e.target.value)}
+                            placeholder="imap.example.com"
+                            className="w-full border rounded px-3 py-2 text-sm bg-white dark:bg-black dark:text-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium dark:text-white mb-2">
+                            IMAP Port:
+                          </label>
+                          <input
+                            value={portIMAP}
+                            onChange={e => setPortIMAP(e.target.value)}
+                            placeholder="993"
+                            className="w-full border rounded px-3 py-2 text-sm bg-white dark:bg-black dark:text-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium dark:text-white mb-2">
+                            Connection Type:
+                          </label>
+                          <select
+                            value={connectionTypeIMAP}
+                            onChange={e => setConnectionTypeIMAP(e.target.value)}
+                            className="w-full border rounded px-3 py-2 text-sm bg-white dark:bg-black dark:text-white"
+                          >
+                            <option value="SSL">SSL</option>
+                            <option value="STARTTLS">STARTTLS</option>
+                            <option value="None">None</option>
+                          </select>
                         </div>
                       </div>
                       <div className="flex justify-end space-x-3 mt-6">

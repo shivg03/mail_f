@@ -246,7 +246,7 @@ useEffect(() => {
 
   return (
     <header className="flex items-center justify-between px-2 md:px-4 py-2 border-b bg-card shadow-sm z-50">
-      <div className="flex items-center space-x-2 md:space-x-4 min-w-0">
+      <div className="flex items-center min-w-0">
         {/* Mobile: Animated hamburger menu */}
         <button 
           onClick={onToggleSidebar}
@@ -270,7 +270,7 @@ useEffect(() => {
           <div className="w-9 h-9 flex items-center justify-center">
              <Icon className="w-10 h-10 text-[#ffa184]" style={{ fill: '#ffa184' }} />
           </div>
-          <span className="text-xl font-semibold text-foreground">Fusion Mail</span>
+          <span className="text-xl font-semibold text-foreground">MailX</span>
         </div>
       </div>
 
@@ -483,11 +483,11 @@ useEffect(() => {
         
 
         {/* Desktop: Support and Settings buttons */}
-        <button className="hidden md:flex p-2 rounded-lg hover:bg-accent transition-colors duration-200" title="Support">
+        {/* <button className="hidden md:flex p-2 rounded-lg hover:bg-accent transition-colors duration-200" title="Support">
           <svg className="w-5 h-5 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
-        </button>
+        </button> */}
         <button 
           onClick={onShowSettings}
           className="hidden md:flex p-2 rounded-lg hover:bg-accent transition-colors duration-200" 

@@ -11,42 +11,49 @@ export function Navbar() {
   };
 
   return (
-    <nav className="bg-white border-b border-gray-200 fixed w-full top-0 z-50">
-      <div className="flex items-center justify-between py-[7px] px-4 md:px-8">
-        {/* Left: Logo and Title */}
-        <div className="flex items-center space-x-3">
-          <div className="w-9 h-9 flex items-center justify-center">
-            <LogoIcon className="w-10 h-10 text-[#ffa184]" style={{ fill: '#ffa184' }} />
+    <>
+    <nav className="fixed w-full top-0 z-50 bg-gray-50 h-16">
+      {/* Max width container */}
+      <div className="">
+        {/* Flex row with border only inside */}
+        <div className="flex items-center justify-between max-w-[24rem] md:max-w-2xl lg:max-w-4xl xl:max-w-6xl mx-auto h-full flex flex-row border-b border-[#ffa18478] py-4 px-2 md:px-0">
+          {/* Left: Logo and Title */}
+          <div className="flex items-center space-x-3">
+            <div className="w-9 h-9 flex items-center justify-center">
+              <LogoIcon className="w-10 h-10 text-[#ffa184]" style={{ fill: '#ffa184' }} />
+            </div>
+            <h1 className="text-2xl font-semibold text-foreground mailx-animate" data-text="MailX">MailX</h1>
           </div>
-          <h1 className="text-xl font-semibold text-foreground">Fusion Mail</h1>
-        </div>
 
-        {/* Right: Gradient Left Arrow Icon */}
-        <div>
-          <button
-            onClick={handleBackNavigation}
-            className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-all duration-200 group relative"
-            title="Back"
-          >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24">
-              <defs>
-                <linearGradient id="gradient-arrow" x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" stopColor="#ffa184" />
-                  <stop offset="35%" stopColor="#ffc3a0" />
-                  <stop offset="70%" stopColor="#ff6b6b" />
-                </linearGradient>
-              </defs>
-              <path
-                stroke="url(#gradient-arrow)"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M10 19l-7-7m0 0l7-7m-7 7h18"
-              />
-            </svg>
-          </button>
+          {/* Right: Gradient Left Arrow Icon */}
+          <div>
+            <button
+              onClick={handleBackNavigation}
+              className="p-2 rounded-full border border-[#ffa184] hover:bg-[#ffe4d66b] dark:hover:bg-gray-800 transition-all duration-200 group relative"
+              title="Back"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24">
+                <defs>
+                  <linearGradient id="gradient-arrow" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stopColor="#ffa184" />
+                    <stop offset="35%" stopColor="#ffc3a0" />
+                    <stop offset="70%" stopColor="#ff6b6b" />
+                  </linearGradient>
+                </defs>
+                <path
+                  stroke="url(#gradient-arrow)"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M10 19l-7-7m0 0l7-7m-7 7h18"
+                />
+              </svg>
+            </button>
+          </div>
         </div>
+        {/* <div className="h-[1px] bg-[#ffa18478] mt-2"></div> */}
       </div>
     </nav>
+    </>
   );
 }

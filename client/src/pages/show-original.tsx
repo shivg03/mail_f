@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useParams } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
 import { useState } from "react";
+import Loader from "@/components/ui/Loader";
 
 export default function ShowOriginal() {
   const params = useParams();
@@ -47,9 +48,17 @@ export default function ShowOriginal() {
     enabled: !!emailId,
   });
 
-  const original = typeof rawData === "string"
-    ? rawData
-    : (rawData?.raw || rawData?.original || rawData?.content || "Raw/original email source not available.");
+  // Try to get rawEml from localStorage first
+  let localRawEml = null;
+  if (typeof window !== 'undefined' && emailId) {
+    localRawEml = localStorage.getItem(`rawEml_${emailId}`);
+  }
+
+  const original = localRawEml
+    ? localRawEml
+    : (typeof rawData === "string"
+      ? rawData
+      : (rawData?.raw || rawData?.original || rawData?.content || "Raw/original email source not available."));
 
   // Table fields from /mails/getMailDetailFromStorage
   const getHeader = (key: string) => {
@@ -80,11 +89,57 @@ export default function ShowOriginal() {
     }
     return String(val);
   };
-  const messageId = getHeader('message-id');
-  const createdAt = getHeader('date');
-  const from = formatHeaderValue(getHeader('from'));
-  const to = formatHeaderValue(getHeader('to'));
-  const subject = formatHeaderValue(getHeader('subject'));
+
+  // Helper to parse headers from rawEml
+  function parseHeadersFromRawEml(raw: string) {
+    const headers: Record<string, string> = {};
+    const lines = raw.split(/\r?\n/);
+    let currentHeader = '';
+    for (const line of lines) {
+      if (/^[A-Za-z0-9\-]+: /.test(line)) {
+        const [key, ...rest] = line.split(': ');
+        currentHeader = key.toLowerCase();
+        headers[currentHeader] = rest.join(': ');
+      } else if ((line.startsWith(' ') || line.startsWith('\t')) && currentHeader) {
+        headers[currentHeader] += ' ' + line.trim();
+      } else if (line.trim() === '') {
+        break; // End of headers
+      }
+    }
+    return headers;
+  }
+
+  // Helper to decode RFC 2047 encoded-words (Q and B encoding)
+  function decodeRFC2047(str: string): string {
+    if (!str) return "";
+    return str.replace(/=\?([^?]+)\?([bqBQ])\?([^?]*)\?=/g, (_, charset, encoding, encodedText) => {
+      if (/^q$/i.test(encoding)) {
+        // Q-encoding: =XX and _ for space
+        return decodeURIComponent(
+          encodedText
+            .replace(/_/g, " ")
+            .replace(/=([A-Fa-f0-9]{2})/g, "%$1")
+        );
+      } else if (/^b$/i.test(encoding)) {
+        // B-encoding: base64
+        try {
+          // atob expects base64 without whitespace
+          return new TextDecoder(charset).decode(Uint8Array.from(atob(encodedText.replace(/\s/g, "")), c => c.charCodeAt(0)));
+        } catch {
+          return encodedText;
+        }
+      }
+      return encodedText;
+    });
+  }
+
+  const parsedHeaders = localRawEml ? parseHeadersFromRawEml(localRawEml) : null;
+
+  const messageId = parsedHeaders?.['message-id'] || getHeader('message-id');
+  const createdAt = parsedHeaders?.['date'] || getHeader('date');
+  const from = decodeRFC2047(parsedHeaders?.['from'] || formatHeaderValue(getHeader('from')));
+  const to = decodeRFC2047(parsedHeaders?.['to'] || formatHeaderValue(getHeader('to')));
+  const subject = decodeRFC2047(parsedHeaders?.['subject'] || formatHeaderValue(getHeader('subject')));
   const getAuthResult = (key: string) => {
     if (!data) return '';
     if (data[key]) return data[key];
@@ -109,9 +164,27 @@ export default function ShowOriginal() {
   );
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(original);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    if (original) {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        navigator.clipboard.writeText(original);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      } else {
+        // Fallback for older browsers
+        const textarea = document.createElement("textarea");
+        textarea.value = original;
+        document.body.appendChild(textarea);
+        textarea.select();
+        try {
+          document.execCommand("copy");
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        } catch {
+          alert("Copy failed. Please copy manually.");
+        }
+        document.body.removeChild(textarea);
+      }
+    }
   };
 
   const handleDownload = () => {
@@ -126,13 +199,20 @@ export default function ShowOriginal() {
     window.URL.revokeObjectURL(url);
   };
 
+  if (isLoading || isRawLoading) {
+    return (
+      <div className="flex-1 flex items-center justify-center bg-background">
+        <Loader />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col items-center py-8 px-2">
       <div className="w-full bg-white dark:bg-black rounded-lg shadow border p-6">
         <h1 className="text-2xl font-semibold mb-6">Original Message</h1>
-        {isLoading || isRawLoading ? (
-          <div className="text-center text-muted-foreground">Loading...</div>
-        ) : rawError ? (
+        {/* Only show error if both localRawEml and API failed */}
+        {(!localRawEml && rawError) ? (
           <div className="text-center text-red-500">Failed to load raw email file.</div>
         ) : (
           <>

@@ -1,7 +1,10 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, updateConversationMessages } from "@/lib/queryClient";
 import type { Email } from "../../pages/mailbox";
 import { useTranslation } from "@/contexts/TranslationContext";
+import Loader from "@/components/ui/Loader";
+import { Volume2 } from "lucide-react";
+import { speakText, stopSpeaking } from "@/lib/textToSpeech";
 
 interface EmailListProps {
   mailId: string;
@@ -10,7 +13,7 @@ interface EmailListProps {
   selectedEmails: string[];
   currentPage: number;
   emailsPerPage: number;
-  onEmailClick: (emailId: number, emailUniqueId: string) => void;
+  onEmailClick: (emailId: number, emailUniqueId: string, sendMailId: string, threadId: string) => void;
   searchResults?: Email[]; // <-- add this line
   selectedCategory?: string; // ✅ added
   isLoading: boolean;
@@ -20,8 +23,32 @@ interface EmailRowProps {
   email: Email;
   isSelected: boolean;
   onSelect: (selected: boolean) => void;
-  onEmailClick: (emailId: number, emlFilePath: string) => void;
+  onEmailClick: (emailId: number, emailUniqueId: string, sendMailId: string, threadId: string) => void;
+  mailId: string;
 }
+
+// Utility function to get the correct payload for updating mail attributes
+function getMailUpdatePayload(message: Email, updates: any) {
+  if (message.sendMail_Id) {
+    return { sendmail_id: message.sendMail_Id, ...updates };
+  } else if (message.emailUniqueId) {
+    return { emailUniqueId: message.emailUniqueId, ...updates };
+  }
+  return updates;
+}
+
+const invalidateAllRelevantQueries = (category: string, mailId: string) => {
+  queryClient.invalidateQueries({ queryKey: ["/email/allmails"] });
+  queryClient.invalidateQueries({ queryKey: ["/mails/get-sendmail"] });
+  queryClient.invalidateQueries({ queryKey: ["/email/getEmailsByLabel"] });
+  if (category === "sent" || category === "drafts" || category === "scheduled") {
+    queryClient.invalidateQueries({ queryKey: ["/mails/get-sendmail", mailId, category] });
+  }
+  if (category && category.startsWith("label:")) {
+    const labelId = category.split(":")[1];
+    queryClient.invalidateQueries({ queryKey: ["/email/getEmailsByLabel", labelId] });
+  }
+};
 
 function MobileEmailRow({
   email,
@@ -30,7 +57,8 @@ function MobileEmailRow({
   onEmailClick,
   category,
   refetchEmails,
-}: EmailRowProps & { category: string; refetchEmails: () => void }) {
+  mailId,
+}: EmailRowProps & { category: string; refetchEmails: () => void; mailId: string }) {
   const updateEmailAttributesMutation = useMutation({
     mutationFn: async (attributes: any) => {
       const authtoken = localStorage.getItem("authtoken");
@@ -45,13 +73,16 @@ function MobileEmailRow({
     },
   });
 
-  const handleStarClick = (e: React.MouseEvent) => {
+  const handleStarClick = async (e: React.MouseEvent) => {
+    console.log("[DEBUG] handleStarClick called", category, mailId);
     e.stopPropagation();
-    if (email.emailUniqueId) {
-      updateEmailAttributesMutation.mutate({
-        emailUniqueId: email.emailUniqueId,
-        isStarred: !email.isStarred,
-      });
+    if (email.threadId && mailId) {
+      const authtoken = localStorage.getItem("authtoken") || "";
+      await updateConversationMessages(mailId, email.threadId, { isStarred: !email.isStarred }, authtoken);
+      console.log("[DEBUG] About to call invalidateAllRelevantQueries", category, mailId);
+      invalidateAllRelevantQueries(category, mailId);
+    } else if (email.emailUniqueId || email.sendMail_Id) {
+      updateEmailAttributesMutation.mutate(getMailUpdatePayload(email, { isStarred: !email.isStarred }));
     }
   };
 
@@ -60,18 +91,21 @@ function MobileEmailRow({
     onSelect(e.target.checked);
   };
 
-  const handleToggleRead = (e: React.MouseEvent) => {
+  const handleToggleRead = async (e: React.MouseEvent) => {
+    console.log("[DEBUG] handleToggleRead called", category, mailId);
     e.stopPropagation();
-    if (email.emailUniqueId) {
-      updateEmailAttributesMutation.mutate({
-        emailUniqueId: email.emailUniqueId,
-        seen: email.isUnread,
-      });
+    if (email.threadId && mailId) {
+      const authtoken = localStorage.getItem("authtoken") || "";
+      await updateConversationMessages(mailId, email.threadId, { seen: email.isUnread }, authtoken);
+      console.log("[DEBUG] About to call invalidateAllRelevantQueries", category, mailId);
+      invalidateAllRelevantQueries(category, mailId);
+    } else if (email.emailUniqueId || email.sendMail_Id) {
+      updateEmailAttributesMutation.mutate(getMailUpdatePayload(email, { seen: email.isUnread }));
     }
   };
 
   const handleEmailClick = () => {
-    onEmailClick(email.id, email.emailUniqueId || "");
+    onEmailClick(email.id, email.emailUniqueId || "", email.sendMail_Id || "", email.threadId || "");
   };
 
   const formatDateTime = (dateString?: string) => {
@@ -112,6 +146,83 @@ function MobileEmailRow({
     return match ? match[1].trim() : fromOrSender;
   };
 
+  // Add per-row action handlers for archive, spam, trash, isUnread, snooze, mute, add to task
+  const handleArchiveClick = async (e: React.MouseEvent) => {
+    console.log("[DEBUG] handleArchiveClick called", category, mailId);
+    e.stopPropagation();
+    if (email.threadId && mailId) {
+      const authtoken = localStorage.getItem("authtoken") || "";
+      await updateConversationMessages(mailId, email.threadId, { isArchived: !email.isArchived }, authtoken);
+      console.log("[DEBUG] About to call invalidateAllRelevantQueries", category, mailId);
+      invalidateAllRelevantQueries(category, mailId);
+    } else if (email.emailUniqueId || email.sendMail_Id) {
+      updateEmailAttributesMutation.mutate(getMailUpdatePayload(email, { isArchived: !email.isArchived }));
+    }
+  };
+  const handleSpamClick = async (e: React.MouseEvent) => {
+    console.log("[DEBUG] handleSpamClick called", category, mailId);
+    e.stopPropagation();
+    if (email.threadId && mailId) {
+      const authtoken = localStorage.getItem("authtoken") || "";
+      await updateConversationMessages(mailId, email.threadId, { isSpam: !email.isSpam }, authtoken);
+      console.log("[DEBUG] About to call invalidateAllRelevantQueries", category, mailId);
+      invalidateAllRelevantQueries(category, mailId);
+    } else if (email.emailUniqueId || email.sendMail_Id) {
+      updateEmailAttributesMutation.mutate(getMailUpdatePayload(email, { isSpam: !email.isSpam }));
+    }
+  };
+  const handleTrashClick = async (e: React.MouseEvent) => {
+    console.log("[DEBUG] handleTrashClick called", category, mailId);
+    e.stopPropagation();
+    if (email.threadId && mailId) {
+      const authtoken = localStorage.getItem("authtoken") || "";
+      await updateConversationMessages(mailId, email.threadId, { isTrash: !email.isTrash }, authtoken);
+      console.log("[DEBUG] About to call invalidateAllRelevantQueries", category, mailId);
+      invalidateAllRelevantQueries(category, mailId);
+    } else if (email.emailUniqueId || email.sendMail_Id) {
+      updateEmailAttributesMutation.mutate(getMailUpdatePayload(email, { isTrash: !email.isTrash }));
+    }
+  };
+  const handleSnoozeClick = async (e: React.MouseEvent) => {
+    console.log("[DEBUG] handleSnoozeClick called", category, mailId);
+    e.stopPropagation();
+    if (email.threadId && mailId) {
+      const authtoken = localStorage.getItem("authtoken") || "";
+      await updateConversationMessages(mailId, email.threadId, { isSnoozed: !email.isSnoozed }, authtoken);
+      console.log("[DEBUG] About to call invalidateAllRelevantQueries", category, mailId);
+      invalidateAllRelevantQueries(category, mailId);
+    } else if (email.emailUniqueId || email.sendMail_Id) {
+      updateEmailAttributesMutation.mutate(getMailUpdatePayload(email, { isSnoozed: !email.isSnoozed }));
+    }
+  };
+  const handleMuteClick = async (e: React.MouseEvent) => {
+    console.log("[DEBUG] handleMuteClick called", category, mailId);
+    e.stopPropagation();
+    if (email.threadId && mailId) {
+      const authtoken = localStorage.getItem("authtoken") || "";
+      await updateConversationMessages(mailId, email.threadId, { isMute: !email.isMute }, authtoken);
+      console.log("[DEBUG] About to call invalidateAllRelevantQueries", category, mailId);
+      invalidateAllRelevantQueries(category, mailId);
+    } else if (email.emailUniqueId || email.sendMail_Id) {
+      updateEmailAttributesMutation.mutate(getMailUpdatePayload(email, { isMute: !email.isMute }));
+    }
+  };
+  const handleAddToTasksClick = async (e: React.MouseEvent) => {
+    console.log("[DEBUG] handleAddToTasksClick called", category, mailId);
+    e.stopPropagation();
+    if (email.threadId && mailId) {
+      const authtoken = localStorage.getItem("authtoken") || "";
+      await updateConversationMessages(mailId, email.threadId, { isAddToTask: !email.isAddToTask }, authtoken);
+      console.log("[DEBUG] About to call invalidateAllRelevantQueries", category, mailId);
+      invalidateAllRelevantQueries(category, mailId);
+    } else if (email.emailUniqueId || email.sendMail_Id) {
+      updateEmailAttributesMutation.mutate(getMailUpdatePayload(email, { isAddToTask: !email.isAddToTask }));
+    }
+  };
+  function stopSpeaking() {
+    window.speechSynthesis.cancel();
+  }
+
   return (
     <div
       className={`flex items-center px-4 py-3 transition-colors cursor-pointer ${email.isUnread ? 'bg-gray-200 dark:bg-gray-800' : ''} hover:bg-gray-50 dark:hover:bg-gray-700`}
@@ -134,36 +245,32 @@ function MobileEmailRow({
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between mb-1">
           <span
-            className={`${
-              email.isUnread
-                ? "dark:text-white font-semibold"
-                : "dark:text-gray-600"
-            } text-sm truncate`}
+            className={`${email.isUnread
+              ? "dark:text-white font-semibold"
+              : "dark:text-gray-600"
+              } text-sm truncate`}
           >
             {getSenderName((email as any).from?.toString() || email.sender)}
           </span>
           <span
-            className={`${
-              email.isUnread
-                ? "dark:text-white font-medium"
-                : "dark:text-gray-400"
-            } text-xs ml-2`}
+            className={`${email.isUnread
+              ? "dark:text-white font-medium"
+              : "dark:text-gray-400"
+              } text-xs ml-2`}
           >
             {formatDateTime((email as any).createdAt?.toString() || (email as any).date?.toString())}
           </span>
         </div>
         <div
-          className={`${
-            email.isUnread ? "dark:text-white font-medium" : "dark:text-gray-400"
-          } text-sm truncate mb-1`}
+          className={`${email.isUnread ? "dark:text-white font-medium" : "dark:text-gray-400"
+            } text-sm truncate mb-1`}
         >
           <div className="flex items-center gap-2">
             <span
-              className={`${
-                email.isUnread
-                  ? "dark:text-white font-medium"
-                  : "dark:text-gray-400"
-              } text-md md:text-sm truncate`}
+              className={`${email.isUnread
+                ? "dark:text-white font-medium"
+                : "dark:text-gray-400"
+                } text-md md:text-sm truncate`}
             >
               {email.subject}
             </span>
@@ -205,7 +312,8 @@ function EmailRow({
   onEmailClick,
   category,
   refetchEmails,
-}: EmailRowProps & { category: string; refetchEmails: () => void }) {
+  mailId,
+}: EmailRowProps & { category: string; refetchEmails: () => void; mailId: string }) {
   const updateEmailAttributesMutation = useMutation({
     mutationFn: async (attributes: any) => {
       const authtoken = localStorage.getItem("authtoken");
@@ -220,13 +328,16 @@ function EmailRow({
     },
   });
 
-  const handleStarClick = (e: React.MouseEvent) => {
+  const handleStarClick = async (e: React.MouseEvent) => {
+    console.log("[DEBUG] handleStarClick called", category, mailId);
     e.stopPropagation();
-    if (email.emailUniqueId) {
-      updateEmailAttributesMutation.mutate({
-        emailUniqueId: email.emailUniqueId,
-        isStarred: !email.isStarred,
-      });
+    if (email.threadId && mailId) {
+      const authtoken = localStorage.getItem("authtoken") || "";
+      await updateConversationMessages(mailId, email.threadId, { isStarred: !email.isStarred }, authtoken);
+      console.log("[DEBUG] About to call invalidateAllRelevantQueries", category, mailId);
+      invalidateAllRelevantQueries(category, mailId);
+    } else if (email.emailUniqueId || email.sendMail_Id) {
+      updateEmailAttributesMutation.mutate(getMailUpdatePayload(email, { isStarred: !email.isStarred }));
     }
   };
 
@@ -235,18 +346,28 @@ function EmailRow({
     onSelect(e.target.checked);
   };
 
-  const handleToggleRead = (e: React.MouseEvent) => {
+  const handleToggleRead = async (e: React.MouseEvent) => {
+    console.log("[DEBUG] handleToggleRead called", category, mailId);
     e.stopPropagation();
-    if (email.emailUniqueId) {
-      updateEmailAttributesMutation.mutate({
-        emailUniqueId: email.emailUniqueId,
-        seen: email.isUnread,
-      });
+    if (email.threadId && mailId) {
+      const authtoken = localStorage.getItem("authtoken") || "";
+      await updateConversationMessages(mailId, email.threadId, { seen: email.isUnread }, authtoken);
+      console.log("[DEBUG] About to call invalidateAllRelevantQueries", category, mailId);
+      invalidateAllRelevantQueries(category, mailId);
+    } else if (email.emailUniqueId || email.sendMail_Id) {
+      updateEmailAttributesMutation.mutate(getMailUpdatePayload(email, { seen: email.isUnread }));
     }
   };
 
   const handleEmailClick = () => {
-    onEmailClick(email.id, email.emailUniqueId || "");
+    console.log("[DEBUG] onEmailClick", {
+      emailId: email.id,
+      emailUniqueId: email.emailUniqueId,
+      sendMailId: email.sendMail_Id,
+      threadId: email.threadId,
+      mailId
+    });
+    onEmailClick(email.id, email.emailUniqueId || "", email.sendMail_Id || "", email.threadId || "");
   };
 
   const formatDateTime = (dateString?: string) => {
@@ -274,6 +395,11 @@ function EmailRow({
       });
     }
   };
+
+  function stopSpeaking() {
+    window.speechSynthesis.cancel();
+  }
+
 
   return (
     <div className={`flex items-center px-2 md:px-4 py-2 md:py-3 border-b transition-all duration-200 group ${email.isUnread ? 'bg-gray-100 dark:bg-gray-800' : ''} hover:bg-accent`}>
@@ -311,11 +437,10 @@ function EmailRow({
       >
         <div className="w-20 md:w-36 flex-shrink-0">
           <span
-            className={`${
-              email.isUnread
-                ? "font-medium dark:text-white"
-                : "dark:text-gray-400"
-            } truncate block text-xs md:text-sm`}
+            className={`${email.isUnread
+              ? "font-medium dark:text-white"
+              : "dark:text-gray-400"
+              } truncate block text-xs md:text-sm`}
           >
             {(email as any).from?.toString() || email.sender}
           </span>
@@ -323,11 +448,10 @@ function EmailRow({
         <div className="flex-1 mx-2 md:mx-4 min-w-0">
           <div className="flex items-center gap-2">
             <span
-              className={`${  
-                email.isUnread
-                  ? "dark:text-white font-medium"
-                  : "dark:text-gray-400"
-              } text-md md:text-sm truncate`}
+              className={`${email.isUnread
+                ? "dark:text-white font-medium"
+                : "dark:text-gray-400"
+                } text-md md:text-sm truncate`}
             >
               {email.subject}
             </span>
@@ -342,11 +466,72 @@ function EmailRow({
           )}
         </div>
         <div
-          className={`${
-            email.isUnread ? "dark:text-white font-medium" : "dark:text-gray-400"
-          } text-xs flex-shrink-0`}
+          className="flex items-center gap-2"
         >
-          {formatDateTime((email as any).createdAt?.toString() || (email as any).date?.toString())}
+          <button
+            onClick={async (e) => {
+              e.stopPropagation();
+
+              if (window.speechSynthesis.speaking) {
+                // If already speaking, stop it instead of starting again
+                stopSpeaking();
+                return;
+              }
+
+              stopSpeaking(); // ensure nothing queued
+
+              try {
+                const authtoken = localStorage.getItem("authtoken");
+                const headers = authtoken ? { Authorization: `Bearer ${authtoken}` } : {};
+                const response = await apiRequest("POST", "/mails/conversation", {
+                  mail_id: mailId,
+                  threadId: email.threadId,
+                  __headers: headers,
+                });
+
+                const conversationData =
+                  response.data?.conversation ||
+                  response.data?.data?.conversation ||
+                  [];
+
+                if (conversationData.length > 0) {
+                  const latestMessage = conversationData.reduce((latest: any, msg: any) => {
+                    const msgDate = new Date(msg.date || msg.createdAt || 0);
+                    const latestDate = new Date(latest.date || latest.createdAt || 0);
+                    return msgDate > latestDate ? msg : latest;
+                  }, conversationData[0]);
+
+                  const messageContent =
+                    latestMessage.parsedHtml ||
+                    latestMessage.content ||
+                    latestMessage.parsedText ||
+                    "";
+
+                  const tempDiv = document.createElement("div");
+                  tempDiv.innerHTML = messageContent;
+                  const textContent = tempDiv.textContent || tempDiv.innerText || "";
+
+                  speakText(textContent || email.subject || "No content available");
+                } else {
+                  speakText(email.preview || email.subject || "No content available");
+                }
+              } catch (error) {
+                console.error("Error fetching conversation:", error);
+                speakText(email.preview || email.subject || "No content available");
+              }
+            }}
+            className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"
+            title="Text to speech"
+          >
+            <Volume2 className="w-3 h-3 md:w-4 md:h-4" />
+          </button>
+
+          <div
+            className={`${email.isUnread ? "dark:text-white font-medium" : "dark:text-gray-400"
+              } text-xs flex-shrink-0`}
+          >
+            {formatDateTime((email as any).createdAt?.toString() || (email as any).date?.toString())}
+          </div>
         </div>
       </div>
     </div>
@@ -365,6 +550,7 @@ export default function EmailList({
   searchResults, // <-- rename prop from sortedEmails to searchResults for clarity
   isLoading,
 }: EmailListProps) {
+  console.log("[DEBUG] EmailList rendered", category, mailId);
   const { t } = useTranslation();
   const isMobile = window.innerWidth < 768;
 
@@ -394,20 +580,7 @@ export default function EmailList({
   if (loadingEmails) {
     return (
       <div className="flex-1 flex items-center justify-center bg-background">
-        <div className="text-center">
-          <div className="w-8 h-8 bg-gradient-to-t from-[#ffa184] via-[#ffc3a0] to-[#ff6b6b] rounded-lg flex items-center justify-center mb-4 mx-auto animate-pulse">
-            <svg
-              className="w-4 h-4 text-primary-foreground"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-            >
-              <path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z" />
-            </svg>
-          </div>
-          <div className="text-muted-foreground font-medium">
-            Loading emails...
-          </div>
-        </div>
+        <Loader />
       </div>
     );
   }
@@ -440,27 +613,29 @@ export default function EmailList({
     <div className="flex-1 overflow-y-auto bg-background">
       {isMobile
         ? paginatedEmails.map((email: Email) => (
-            <MobileEmailRow
-              key={email.emailUniqueId || email.id}
-              email={email}
-              isSelected={!!email.emailUniqueId && selectedEmails.includes(email.emailUniqueId)}
-              onSelect={(selected) => { if (email.emailUniqueId) onEmailSelect(email.emailUniqueId, selected); }}
-              onEmailClick={onEmailClick}
-              category={category}
-              refetchEmails={refetch}
-            />
-          ))
+          <MobileEmailRow
+            key={email.emailUniqueId || email.id || email.sendMail_Id}
+            email={email}
+            isSelected={!!email.emailUniqueId && selectedEmails.includes(email.emailUniqueId)}
+            onSelect={(selected) => { if (email.emailUniqueId) onEmailSelect(email.emailUniqueId, selected); }}
+            onEmailClick={onEmailClick}
+            category={category}
+            refetchEmails={refetch}
+            mailId={mailId}
+          />
+        ))
         : paginatedEmails.map((email: Email) => (
-            <EmailRow
-              key={email.emailUniqueId}
-              email={email}
-              isSelected={email.emailUniqueId ? selectedEmails.includes(email.emailUniqueId) : false}
-              onSelect={(selected) => { if (email.emailUniqueId) onEmailSelect(email.emailUniqueId, selected); }}
-              onEmailClick={onEmailClick}
-              category={category}
-              refetchEmails={refetch}
-            />
-          ))}
+          <EmailRow
+            key={email.emailUniqueId || email.id || email.sendMail_Id}
+            email={email}
+            isSelected={email.emailUniqueId ? selectedEmails.includes(email.emailUniqueId) : false}
+            onSelect={(selected) => { if (email.emailUniqueId) onEmailSelect(email.emailUniqueId, selected); }}
+            onEmailClick={onEmailClick}
+            category={category}
+            refetchEmails={refetch}
+            mailId={mailId}
+          />
+        ))}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { queryClient } from "@/lib/queryClient";
+import { queryClient, updateConversationMessages } from "@/lib/queryClient";
 import { useTranslation } from "@/contexts/TranslationContext";
 import LeftSidebar from "@/components/gmail/LeftSidebar";
 import TopNavbar from "@/components/gmail/TopNavbar";
@@ -16,6 +16,11 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { useMutation } from "@tanstack/react-query";
 import { BuildAliasTable } from "drizzle-orm/mysql-core";
+import Loader from "@/components/ui/Loader";
+import { CloudFog } from "lucide-react";
+import SendStatusBar from "@/components/gmail/SendStatusBar"; // If you want to move it to its own file, or keep inline
+import { jwtDecode } from "jwt-decode";
+import { useIsFetching } from "@tanstack/react-query";
 
 // Update the Email type/interface to include all filter properties
 // If you have an interface or type Email, update it like this:
@@ -23,6 +28,7 @@ export type Email = {
   id: number;
   sender: string;
   recipient: string;
+  to?: string;
   subject: string;
   content: string;
   isRead: boolean | null;
@@ -38,15 +44,62 @@ export type Email = {
   isBlocked: boolean | null;
   emailUniqueId: string;
   preview?: string;
+  status?: string;
   timestamp?: string | Date | null;
+  sendMail_Id?: string; // <-- add this line
+  threadId?: string; // <-- add this line
+  date?: string | Date | null; // <-- add this line
+  from?: string; // <-- add this line
+  html?: string; // <-- add this line
   // ...other fields
 };
+
+// Utility function to get the correct payload for updating mail attributes
+function getMailUpdatePayload(message: Email, updates: any) {
+  if (message.sendMail_Id) {
+    return { sendmail_id: message.sendMail_Id, ...updates };
+  } else if (message.emailUniqueId) {
+    return { emailUniqueId: message.emailUniqueId, ...updates };
+  }
+  return updates;
+}
+
+function getUserEmailFromToken() {
+  const token = localStorage.getItem("authtoken");
+  if (!token) return "";
+  try {
+    const decoded = jwtDecode(token) as any;
+    console.log("decoded", decoded.userEmail);
+    return decoded.userEmail || "";
+  } catch {
+    return "";
+  }
+}
+
+function invalidateAllRelevantQueries(currentView: string, mailId: string | undefined) {
+  console.log("[DEBUG] invalidateAllRelevantQueries called", currentView, mailId);
+  queryClient.invalidateQueries({ queryKey: ["/email/allmails"] });
+  queryClient.invalidateQueries({ queryKey: ["/mails/get-sendmail"] });
+  queryClient.invalidateQueries({ queryKey: ["/email/getEmailsByLabel"] });
+  if (currentView === "sent" || currentView === "drafts" || currentView === "scheduled") {
+    queryClient.invalidateQueries({ queryKey: ["/mails/get-sendmail", mailId, currentView] });
+  }
+  if (currentView && currentView.startsWith("label:")) {
+    const labelId = currentView.split(":")[1];
+    queryClient.invalidateQueries({ queryKey: ["/email/getEmailsByLabel", labelId] });
+  }
+  // Debug: log all active query keys
+  const allQueries = queryClient.getQueryCache().getAll();
+  console.log("[DEBUG] Active React Query keys:", allQueries.map(q => q.queryKey));
+}
 
 export default function Mailbox() {
   const { t } = useTranslation();
   const [, setLocation] = useLocation();
   // Support both /email/:emailId and /:tab? routes
-  const [matchEmail, paramsEmail] = useRoute("/mailbox/m/:mail_Id/:view/email/:emailId");
+  const [matchEmail, paramsEmail] = useRoute(
+    "/mailbox/m/:mail_Id/:view/email/:emailId"
+  );
   const [match, params] = useRoute("/mailbox/m/:mail_Id/:view/:tab?");
   const mailId = paramsEmail?.mail_Id || params?.mail_Id;
   const urlView = paramsEmail?.view || params?.view || "inbox";
@@ -54,9 +107,11 @@ export default function Mailbox() {
   const urlEmailId = paramsEmail?.emailId;
   const { toast } = useToast();
   const [location] = useLocation(); // location is a string
-    // Only show session expired toast if user was previously authenticated
-    const [checkedAuth, setCheckedAuth] = React.useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(window.innerWidth < 768);
+  // Only show session expired toast if user was previously authenticated
+  const [checkedAuth, setCheckedAuth] = React.useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    window.innerWidth < 768
+  );
   const [selectedCategory, setSelectedCategory] = useState("inbox");
   const [currentView, setCurrentView] = useState(urlView);
   const [showKeyboard, setShowKeyboard] = useState(false);
@@ -75,9 +130,15 @@ export default function Mailbox() {
     }
     return 50;
   });
-  const [selectedEmailId, setSelectedEmailId] = useState<number | null>(urlEmailId ? Number(urlEmailId) : null);
-  const [selectedEmailUniqueId, setSelectedEmailUniqueId] = useState<string | null>(null);
-  const [selectedEmailFilePath, setSelectedEmailFilePath] = useState<string | null>(null);
+  const [selectedEmailId, setSelectedEmailId] = useState<number | null>(
+    urlEmailId ? Number(urlEmailId) : null
+  );
+  const [selectedEmailUniqueId, setSelectedEmailUniqueId] = useState<
+    string | null
+  >(null);
+  const [selectedEmailFilePath, setSelectedEmailFilePath] = useState<
+    string | null
+  >(null);
   const [showSettings, setShowSettings] = useState(false);
   const initialTabFromUrl = (() => {
     const match = location && location.match(/settings\/(\w+)/);
@@ -90,9 +151,70 @@ export default function Mailbox() {
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false); // Default: shown
   const [searchFilters, setSearchFilters] = useState<any>(null);
   const [searchResults, setSearchResults] = useState<Email[] | null>(null);
-  const [labelEmails, setLabelEmails] = useState<Email[] | null>(null);
+  const [labelEmails, setLabelEmails] = useState<{ received: Email[], sent: Email[] } | null>(null);
   const [labelLoading, setLabelLoading] = useState(false);
   const [labelError, setLabelError] = useState<string | null>(null);
+  const [fetchedEmails, setFetchedEmails] = useState<Email[]>([]);
+  const [loadingEmails, setLoadingEmails] = useState(false);
+  const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent'>('idle');
+  const [sentMailId, setSentMailId] = useState<string | null>(null);
+  const [pageLoading, setPageLoading] = useState(false);
+  const [mailboxUserEmail, setMailboxUserEmail] = useState("");
+
+  const updateEmailAttributesMutation = useMutation({
+    mutationFn: async (attributes: any) => {
+      const authtoken = localStorage.getItem("authtoken");
+      const headers = authtoken ? { Authorization: `Bearer ${authtoken}` } : {};
+      return apiRequest("POST", "/email/updateEmail", {
+        ...attributes,
+        __headers: headers,
+      });
+    },
+  });
+
+  // Auto-hide the send bar after 5 seconds when sent
+  useEffect(() => {
+    if (sendStatus === "sent") {
+      const timer = setTimeout(() => {
+        setSendStatus("idle");
+      }, 3000); // 5 seconds
+      return () => clearTimeout(timer);
+    }
+  }, [sendStatus]);
+
+  // Fetch drafts or sent mails from backend when those tabs are selected
+  useEffect(() => {
+    async function fetchMails() {
+      setLoadingEmails(true);
+      let status;
+      if (currentView === "drafts") status = "draft";
+      else if (currentView === "sent") status = "sent";
+      else if (currentView === "scheduled") status = "scheduled";
+      else status = undefined;
+
+      if (!mailId || !status) {
+        setFetchedEmails([]);
+        setLoadingEmails(false);
+        return;
+      }
+
+      try {
+        const res = await apiRequest("POST", "/mails/get-sendmail", {
+          mail_Id: mailId,
+          status,
+        });
+        console.log("send mail", res.data);
+        setFetchedEmails(res.data || []);
+      } catch (e) {
+        setFetchedEmails([]);
+        toast({ title: "Failed to load emails", variant: "destructive" });
+      }
+      setLoadingEmails(false);
+    }
+    if (currentView === "drafts" || currentView === "sent" || currentView === "scheduled") {
+      fetchMails();
+    }
+  }, [currentView, mailId]);
 
   const toggleSidebar = () => {
     setSidebarCollapsed(!sidebarCollapsed);
@@ -110,8 +232,8 @@ export default function Mailbox() {
       }
     };
 
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
   }, []);
 
   // const handleCategoryChange = (category: string) => {
@@ -119,6 +241,7 @@ export default function Mailbox() {
   // };
 
   const handleViewChange = (view: string) => {
+    setPageLoading(true);
     setCurrentView(view);
     setLocation(`/mailbox/m/${mailId}/${view}`);
     setSelectedEmails([]);
@@ -127,24 +250,25 @@ export default function Mailbox() {
     if (window.innerWidth < 768) {
       setSidebarCollapsed(true);
     }
+    refetch(); // Force refetch on tab change
   };
 
   const handleEmailSelect = (emailUniqueId: string, selected: boolean) => {
     if (selected) {
       setSelectedEmails([...selectedEmails, emailUniqueId]);
     } else {
-      setSelectedEmails(selectedEmails.filter(id => id !== emailUniqueId));
+      setSelectedEmails(selectedEmails.filter((id) => id !== emailUniqueId));
     }
   };
 
   const handleSelectAll = async (type: string) => {
     // Get current emails to get all email IDs for the current category or label
-    const isLabelView = currentView.startsWith('label:');
-    const labelName = isLabelView ? currentView.split('label:')[1] : '';
+    const isLabelView = currentView.startsWith("label:");
+    const labelName = isLabelView ? currentView.split("label:")[1] : "";
     const currentCategory = currentView === "inbox" ? "inbox" : currentView;
 
     try {
-      const apiUrl = isLabelView 
+      const apiUrl = isLabelView
         ? `/api/labels/${labelName}/emails`
         : `/api/emails/${currentCategory}`;
 
@@ -177,15 +301,15 @@ export default function Mailbox() {
       }
 
       // Make bulk update API call
-      const updateResponse = await fetch('/api/emails/bulk', {
-        method: 'PATCH',
+      const updateResponse = await fetch("/api/emails/bulk", {
+        method: "PATCH",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({
           emailIds: allEmailIds,
-          updates
-        })
+          updates,
+        }),
       });
 
       if (updateResponse.ok) {
@@ -193,11 +317,14 @@ export default function Mailbox() {
         window.location.reload();
       }
     } catch (error) {
-      console.error('Error updating emails:', error);
+      console.error("Error updating emails:", error);
     }
   };
 
-  const handleMainCheckboxToggle = (checked: boolean, allEmailIds: string[]) => {
+  const handleMainCheckboxToggle = (
+    checked: boolean,
+    allEmailIds: string[]
+  ) => {
     if (checked) {
       setSelectedEmails(allEmailIds);
     } else {
@@ -206,12 +333,13 @@ export default function Mailbox() {
   };
 
   const handleRefresh = async () => {
-    const isLabelView = currentView.startsWith('label:');
-    const labelName = isLabelView ? currentView.split('label:')[1] : '';
-    const currentCategory = currentView === "inbox" ? selectedCategory : currentView;
+    const isLabelView = currentView.startsWith("label:");
+    const labelName = isLabelView ? currentView.split("label:")[1] : "";
+    const currentCategory =
+      currentView === "inbox" ? selectedCategory : currentView;
 
     // Invalidate the specific email query to refetch fresh data
-    const queryKey = isLabelView 
+    const queryKey = isLabelView
       ? [`/api/labels/${labelName}/emails`]
       : [`/api/emails/${currentCategory}`, currentCategory];
 
@@ -220,12 +348,12 @@ export default function Mailbox() {
 
   const handleUnmuteEmails = async (emailIds: string[]) => {
     try {
-      const response = await fetch('/api/emails/bulk/unmute', {
-        method: 'PATCH',
+      const response = await fetch("/api/emails/bulk/unmute", {
+        method: "PATCH",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
-        body: JSON.stringify({ emailIds })
+        body: JSON.stringify({ emailIds }),
       });
 
       if (response.ok) {
@@ -234,21 +362,23 @@ export default function Mailbox() {
         handleRefresh();
 
         // Show success message
-        console.log(`Unmuted ${emailIds.length} email${emailIds.length > 1 ? 's' : ''}`);
+        console.log(
+          `Unmuted ${emailIds.length} email${emailIds.length > 1 ? "s" : ""}`
+        );
       }
     } catch (error) {
-      console.error('Error unmuting emails:', error);
+      console.error("Error unmuting emails:", error);
     }
   };
 
   const handleMuteEmails = async (emailIds: string[]) => {
     try {
-      const response = await fetch('/api/emails/bulk/mute', {
-        method: 'PATCH',
+      const response = await fetch("/api/emails/bulk/mute", {
+        method: "PATCH",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
-        body: JSON.stringify({ emailIds })
+        body: JSON.stringify({ emailIds }),
       });
 
       if (response.ok) {
@@ -257,173 +387,120 @@ export default function Mailbox() {
         handleRefresh();
 
         // Show success message
-        console.log(`Muted ${emailIds.length} email${emailIds.length > 1 ? 's' : ''}`);
+        console.log(
+          `Muted ${emailIds.length} email${emailIds.length > 1 ? "s" : ""}`
+        );
       }
     } catch (error) {
-      console.error('Error muting emails:', error);
+      console.error("Error muting emails:", error);
     }
   };
 
   const handleUnsnoozeEmails = async (emailIds: string[]) => {
-    console.log('[DEBUG] handleUnsnoozeEmails called with emailIds:', emailIds);
     try {
-      // Use the correct query key to get emails
-      const currentCategory = currentView === "inbox" ? selectedCategory : currentView;
-      const queryKey = ["/email/allmails", mailId, currentCategory];
-      const emails = queryClient.getQueryData(queryKey) || [];
-      // Map ids to emailUniqueId
-      const idToUniqueId = new Map();
-      (emails as any[]).forEach(email => {
-        if (email.id && email.emailUniqueId) {
-          idToUniqueId.set(email.id, email.emailUniqueId);
+      for (const emailId of emailIds) {
+        const email = allEmails.find((e: any) => e.emailUniqueId === emailId);
+        if (email && email.threadId && mailId) {
+          const authtoken = localStorage.getItem("authtoken") || "";
+          await updateConversationMessages(mailId, email.threadId, { isSnoozed: false }, authtoken);
+          invalidateAllRelevantQueries(currentView, mailId);
+        } else if (email) {
+          updateEmailAttributesMutation.mutate(getMailUpdatePayload(email, { isSnoozed: false }));
+          invalidateAllRelevantQueries(currentView, mailId);
         }
-      });
-      console.log('[DEBUG] idToUniqueId map:', idToUniqueId);
-      // Call /email/updateEmail for each email
-      await Promise.all(emailIds.map(async (id) => {
-        const emailUniqueId = idToUniqueId.get(id);
-        console.log(`[DEBUG] Processing id: ${id}, emailUniqueId:`, emailUniqueId);
-        if (!emailUniqueId) {
-          console.warn(`[DEBUG] No emailUniqueId found for id: ${id}`);
-          return;
-        }
-        const authtoken = localStorage.getItem("authtoken");
-        const unsnoozeAuthHeaders = authtoken ? { Authorization: `Bearer ${authtoken}` } : {};
-        const unsnoozePayload = { emailUniqueId, isSnoozed: false };
-        console.log('[DEBUG] Sending /email/updateEmail with payload:', unsnoozePayload);
-        await apiRequest("POST", "/email/updateEmail", {
-          ...unsnoozePayload,
-          __headers: unsnoozeAuthHeaders,
-        });
-      }));
-      // Invalidate the query to force refetch
-      queryClient.invalidateQueries(["/email/allmails", mailId || '', currentCategory || ''] as any);
-      // Clear selected emails and refresh the view
+      }
+      invalidateAllRelevantQueries(currentView, mailId);
       setSelectedEmails([]);
       handleRefresh();
-      // Show success message
-      console.log(`[DEBUG] Unsnoozed ${emailIds.length} email(s)`);
     } catch (error) {
-      console.error('[DEBUG] Error unsnoozing emails:', error);
+      console.error("[DEBUG] Error unsnoozing emails:", error);
     }
   };
 
   const handleBulkMarkAsRead = async (emailIds: string[]) => {
     try {
-      const response = await fetch('/api/emails/bulk', {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          emailIds,
-          updates: { isRead: true }
-        })
-      });
-
-      if (response.ok) {
-        // Clear selected emails and refresh the view
-        setSelectedEmails([]);
-        handleRefresh();
-
-        // Show success message
-        console.log(`Marked ${emailIds.length} email${emailIds.length > 1 ? 's' : ''} as read`);
+      for (const emailId of emailIds) {
+        const email = allEmails.find((e: any) => e.emailUniqueId === emailId);
+        if (email && email.threadId && mailId) {
+          const authtoken = localStorage.getItem("authtoken") || "";
+          await updateConversationMessages(mailId, email.threadId, { seen: true }, authtoken);
+          invalidateAllRelevantQueries(currentView, mailId);
+        } else if (email) {
+          updateEmailAttributesMutation.mutate(getMailUpdatePayload(email, { seen: true }));
+          invalidateAllRelevantQueries(currentView, mailId);
+        }
       }
+      invalidateAllRelevantQueries(currentView, mailId);
+      setSelectedEmails([]);
+      handleRefresh();
     } catch (error) {
-      console.error('Error marking emails as read:', error);
+      console.error("Error marking emails as read:", error);
     }
   };
 
   // Bulk unspam handler
   const handleUnspamEmails = async (emailIds: string[]) => {
     try {
-      const currentCategory = currentView === "inbox" ? selectedCategory : currentView;
-      const queryKey = ["/email/allmails", mailId, currentCategory];
-      const emails = queryClient.getQueryData(queryKey) || [];
-      const idToUniqueId = new Map();
-      (emails as any[]).forEach(email => {
-        if (email.id && email.emailUniqueId) {
-          idToUniqueId.set(email.id, email.emailUniqueId);
+      for (const emailId of emailIds) {
+        const email = allEmails.find((e: any) => e.emailUniqueId === emailId);
+        if (email && email.threadId && mailId) {
+          const authtoken = localStorage.getItem("authtoken") || "";
+          await updateConversationMessages(mailId, email.threadId, { isSpam: false }, authtoken);
+          invalidateAllRelevantQueries(currentView, mailId);
+        } else if (email) {
+          updateEmailAttributesMutation.mutate(getMailUpdatePayload(email, { isSpam: false }));
+          invalidateAllRelevantQueries(currentView, mailId);
         }
-      });
-      await Promise.all(emailIds.map(async (id) => {
-        const emailUniqueId = idToUniqueId.get(id);
-        if (!emailUniqueId) return;
-        const authtoken = localStorage.getItem("authtoken");
-        const headers = authtoken ? { Authorization: `Bearer ${authtoken}` } : {};
-        await apiRequest("POST", "/email/updateEmail", {
-          emailUniqueId,
-          isSpam: false,
-          __headers: headers,
-        });
-      }));
-      queryClient.invalidateQueries(["/email/allmails", mailId || '', currentCategory || ''] as any);
+      }
+      invalidateAllRelevantQueries(currentView, mailId);
       setSelectedEmails([]);
       handleRefresh();
     } catch (error) {
-      console.error('Error unspamming emails:', error);
+      console.error("Error unspamming emails:", error);
     }
   };
 
   // Bulk unarchive handler
   const handleUnarchiveEmails = async (emailIds: string[]) => {
     try {
-      const currentCategory = currentView === "inbox" ? selectedCategory : currentView;
-      const queryKey = ["/email/allmails", mailId, currentCategory];
-      const emails = queryClient.getQueryData(queryKey) || [];
-      const idToUniqueId = new Map();
-      (emails as any[]).forEach(email => {
-        if (email.id && email.emailUniqueId) {
-          idToUniqueId.set(email.id, email.emailUniqueId);
+      for (const emailId of emailIds) {
+        const email = allEmails.find((e: any) => e.emailUniqueId === emailId);
+        if (email && email.threadId && mailId) {
+          const authtoken = localStorage.getItem("authtoken") || "";
+          await updateConversationMessages(mailId, email.threadId, { isArchived: false }, authtoken);
+          invalidateAllRelevantQueries(currentView, mailId);
+        } else if (email) {
+          updateEmailAttributesMutation.mutate(getMailUpdatePayload(email, { isArchived: false }));
+          invalidateAllRelevantQueries(currentView, mailId);
         }
-      });
-      await Promise.all(emailIds.map(async (id) => {
-        const emailUniqueId = idToUniqueId.get(id);
-        if (!emailUniqueId) return;
-        const authtoken = localStorage.getItem("authtoken");
-        const headers = authtoken ? { Authorization: `Bearer ${authtoken}` } : {};
-        await apiRequest("POST", "/email/updateEmail", {
-          emailUniqueId,
-          isArchived: false,
-          __headers: headers,
-        });
-      }));
-      queryClient.invalidateQueries(["/email/allmails", mailId || '', currentCategory || ''] as any);
+      }
+      invalidateAllRelevantQueries(currentView, mailId);
       setSelectedEmails([]);
       handleRefresh();
     } catch (error) {
-      console.error('Error unarchiving emails:', error);
+      console.error("Error unarchiving emails:", error);
     }
   };
 
   // Bulk remove from tasks handler
   const handleRemoveFromTasks = async (emailIds: string[]) => {
     try {
-      const currentCategory = currentView === "inbox" ? selectedCategory : currentView;
-      const queryKey = ["/email/allmails", mailId, currentCategory];
-      const emails = queryClient.getQueryData(queryKey) || [];
-      const idToUniqueId = new Map();
-      (emails as any[]).forEach(email => {
-        if (email.id && email.emailUniqueId) {
-          idToUniqueId.set(email.id, email.emailUniqueId);
+      for (const emailId of emailIds) {
+        const email = allEmails.find((e: any) => e.emailUniqueId === emailId);
+        if (email && email.threadId && mailId) {
+          const authtoken = localStorage.getItem("authtoken") || "";
+          await updateConversationMessages(mailId, email.threadId, { isAddToTask: false }, authtoken);
+          invalidateAllRelevantQueries(currentView, mailId);
+        } else if (email) {
+          updateEmailAttributesMutation.mutate(getMailUpdatePayload(email, { isAddToTask: false }));
+          invalidateAllRelevantQueries(currentView, mailId);
         }
-      });
-      await Promise.all(emailIds.map(async (id) => {
-        const emailUniqueId = idToUniqueId.get(id);
-        if (!emailUniqueId) return;
-        const authtoken = localStorage.getItem("authtoken");
-        const headers = authtoken ? { Authorization: `Bearer ${authtoken}` } : {};
-        await apiRequest("POST", "/email/updateEmail", {
-          emailUniqueId,
-          isAddToTask: false,
-          __headers: headers,
-        });
-      }));
-      queryClient.invalidateQueries(["/email/allmails", mailId || '', currentCategory || ''] as any);
+      }
+      invalidateAllRelevantQueries(currentView, mailId);
       setSelectedEmails([]);
       handleRefresh();
     } catch (error) {
-      console.error('Error removing emails from tasks:', error);
+      console.error("Error removing emails from tasks:", error);
     }
   };
 
@@ -433,17 +510,21 @@ export default function Mailbox() {
     setSelectedEmails([]);
   };
 
-  const handleEmailClick = (emailId: number, emailUniqueId: string) => {
-    setSelectedEmailId(emailId);
-    setSelectedEmailUniqueId(emailUniqueId);
-    setLocation(`/mailbox/m/${mailId}/${currentView}/email/${emailId}`);
+  const handleEmailClick = (emailId: number, emailUniqueId: string, sendMailId: string) => {
+    if (currentView === "drafts" || currentView === "sent" || currentView === "scheduled") {
+      setLocation(`/mailbox/m/${mailId}/${currentView}/email/${sendMailId}`);
+    } else {
+      setLocation(`/mailbox/m/${mailId}/${currentView}/email/${emailUniqueId}`);
+    }
   };
 
   // When closing email detail, update the URL
   const handleBackToList = () => {
+    setPageLoading(true);
     setSelectedEmailId(null);
     setSelectedEmailUniqueId(null);
     setLocation(`/mailbox/m/${mailId}/${currentView}`);
+    refetch(); // Force refetch immediately
   };
 
   // Sync selectedEmailId with URL on mount or URL change
@@ -480,20 +561,62 @@ export default function Mailbox() {
   };
 
   // Get total emails count for pagination
-  const isLabelView = currentView.startsWith('label:');
-  const labelName = isLabelView ? currentView.split('label:')[1] : '';
+  const isLabelView = currentView.startsWith("label:");
+  const labelName = isLabelView ? currentView.split("label:")[1] : "";
 
-  const currentCategory = currentView === "inbox" ? selectedCategory : currentView;
+  const currentCategory =
+    currentView === "inbox" ? selectedCategory : currentView;
 
   // Choose the appropriate API endpoint based on view type
-  const queryKey = isLabelView 
-    ? [`/api/labels/${labelName}/emails`]
-    : [`/api/emails/${currentCategory}`, currentCategory];
+  const getTabQueryKey = (mailId: string | undefined, view: string) => {
+    switch (view) {
+      case "sent":
+      case "drafts":
+        return ["/mails/get-sendmail", mailId, view];
+      default:
+        return ["/email/allmails", mailId, view];
+    }
+  };
 
-    const { data: allEmails = [], isLoading } = useQuery<Email[]>({
-      queryKey: ["/email/allmails", mailId, currentView],
-      queryFn: async () => apiRequest("POST", "/email/allmails", { mail_id: mailId }),
-    });
+  const queryKey = getTabQueryKey(mailId, currentView);
+
+  const queryFn = async () => {
+    if (currentView === "sent" || currentView === "drafts") {
+      const res = await apiRequest("POST", "/mails/get-sendmail", {
+        mail_Id: mailId,
+        status: currentView === "sent" ? "sent" : "draft",
+      });
+      console.log("[DEBUG] API response for", currentView, res.data);
+      return res.data || [];
+    } else {
+      const res = await apiRequest("POST", "/email/allmails", {
+        mail_id: mailId,
+        category: currentView,
+      });
+      console.log("[DEBUG] API response for", currentView, res.data);
+      return Array.isArray(res.data) ? res.data : res.data?.emails || [];
+    }
+  };
+
+  const {
+    data: allEmails = [],
+    isLoading,
+    isFetching,
+    refetch
+  } = useQuery<Email[]>({
+    queryKey,
+    queryFn,
+  });
+
+  useEffect(() => {
+    console.log("[DEBUG] QueryKey:", queryKey, "allEmails:", allEmails);
+  }, [queryKey, allEmails]);
+
+  useEffect(() => {
+    if (!isLoading && !isFetching) {
+      setPageLoading(false);
+    }
+  }, [isLoading, isFetching]);
 
   // Get inbox type from settings
   const getInboxType = () => {
@@ -533,8 +656,14 @@ export default function Mailbox() {
       case "unread":
         // Sort unread first, then by date
         return sortedEmails.sort((a, b) => {
-          const aUnread = typeof (a as any).isUnread === 'boolean' ? (a as any).isUnread : !a.isRead;
-          const bUnread = typeof (b as any).isUnread === 'boolean' ? (b as any).isUnread : !b.isRead;
+          const aUnread =
+            typeof (a as any).isUnread === "boolean"
+              ? (a as any).isUnread
+              : !a.isRead;
+          const bUnread =
+            typeof (b as any).isUnread === "boolean"
+              ? (b as any).isUnread
+              : !b.isRead;
           if (aUnread && !bUnread) return -1;
           if (!aUnread && bUnread) return 1;
           return getTimestamp(b) - getTimestamp(a);
@@ -577,47 +706,78 @@ export default function Mailbox() {
     if (!Array.isArray(emails)) return [];
     switch (category) {
       case "starred":
-        return emails.filter(email => email.isStarred);
+        return emails.filter((email) => email.isStarred);
       case "snoozed":
-        return emails.filter(email => email.isSnoozed);
+        return emails.filter((email) => email.isSnoozed);
       case "important":
-        return emails.filter(email => email.isImportant);
+        return emails.filter((email) => email.isImportant);
       case "spam":
-        return emails.filter(email => email.isSpam);
+        return emails.filter((email) => email.isSpam);
       case "trash":
-        return emails.filter(email => email.isTrash);
+        return emails.filter((email) => email.isTrash);
       case "archive":
       case "archived":
-        return emails.filter(email => email.isArchived);
+        return emails.filter((email) => email.isArchived);
       case "muted":
-        return emails.filter(email => email.isMute);
+        return emails.filter((email) => email.isMute);
       case "tasks":
-        return emails.filter(email => email.isAddToTask);
+        return emails.filter((email) => email.isAddToTask);
       case "allmails":
         // Show all except archived, spam, trash (do NOT exclude isMute)
-        return emails.filter(email =>
-          !email.isArchived &&
-          !email.isSpam &&
-          !email.isTrash &&
-          !email.isBlocked
+        return emails.filter(
+          (email) =>
+            !email.isArchived &&
+            !email.isSpam &&
+            !email.isTrash &&
+            !email.isBlocked
         );
       case "blocked":
         // Only show emails that are blocked
-        return emails.filter(email => email.isBlocked);
+        return emails.filter((email) => email.isBlocked);
+      case "drafts":
+      case "sent":
+      case "scheduled":
+        // For these, the backend already filtered by status, so just return all
+        return emails;
       case "inbox":
       default:
         return emails.filter(
-          email =>
+          (email) =>
             // Show if not archived, spam, trash, and not muted
-            (!email.isArchived && !email.isSpam && !email.isTrash && !email.isMute && !email.isBlocked)
+            (!email.isArchived &&
+              !email.isSpam &&
+              !email.isTrash &&
+              !email.isMute &&
+              !email.isBlocked) ||
             // OR always include if isAddToTask, isImportant, isSnoozed, or isStarred
-            || email.isAddToTask || email.isImportant || email.isSnoozed || email.isStarred
+            email.isAddToTask ||
+            email.isImportant ||
+            email.isSnoozed ||
+            email.isStarred
         );
     }
   }
 
-  const filteredEmails = filterEmailsByCategory(allEmails, currentView)
-    .filter(email => email && (email.emailUniqueId || email.id) && email.subject);
+  const userEmail = allEmails[0]?.to || "";
+  console.log("userEmail:", userEmail);
+
+  // Use the correct emails array based on currentView
+  const emailsToShow =
+    currentView === "drafts" || currentView === "sent" || currentView === "scheduled"
+      ? fetchedEmails
+      : allEmails;
+
+  console.log('DEBUG: emailsToShow', emailsToShow);
+  console.log('DEBUG: selectedEmailId', selectedEmailId);
+  console.log('DEBUG: selectedEmailUniqueId', selectedEmailUniqueId);
+  console.log('DEBUG: urlEmailId', urlEmailId);
+
+  const filteredEmails = filterEmailsByCategory(
+    emailsToShow,
+    currentView
+  ).filter(
+    (email) => email && (email.emailUniqueId || email.id) && email.subject
+  );
   const sortedEmails = sortEmailsByInboxType(filteredEmails);
   console.log("📬 Emails passed to EmailList:", sortedEmails);
   const totalEmails = sortedEmails.length;
@@ -657,7 +817,7 @@ export default function Mailbox() {
       trash: true,
     };
 
-    const savedVisibility = localStorage.getItem('systemLabelsVisibility');
+    const savedVisibility = localStorage.getItem("systemLabelsVisibility");
     if (savedVisibility) {
       const parsed = JSON.parse(savedVisibility);
       // Merge with new defaults to ensure new labels are visible
@@ -669,7 +829,7 @@ export default function Mailbox() {
 
     // Listen for storage changes to sync with Settings modal
     const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === 'systemLabelsVisibility' && e.newValue) {
+      if (e.key === "systemLabelsVisibility" && e.newValue) {
         setSystemLabelsVisibility(JSON.parse(e.newValue));
       }
     };
@@ -692,16 +852,34 @@ export default function Mailbox() {
       // The context will be handled by the ComposeModal component's useEffect
     };
 
-    window.addEventListener('storage', handleStorageChange);
-    window.addEventListener('systemLabelsVisibilityChanged', handleCustomEvent as EventListener);
-    window.addEventListener('openSettingsWithTab', handleOpenSettingsWithTab as EventListener);
-    window.addEventListener('openComposeWithContext', handleOpenComposeWithContext as EventListener);
+    window.addEventListener("storage", handleStorageChange);
+    window.addEventListener(
+      "systemLabelsVisibilityChanged",
+      handleCustomEvent as EventListener
+    );
+    window.addEventListener(
+      "openSettingsWithTab",
+      handleOpenSettingsWithTab as EventListener
+    );
+    window.addEventListener(
+      "openComposeWithContext",
+      handleOpenComposeWithContext as EventListener
+    );
 
     return () => {
-      window.removeEventListener('storage', handleStorageChange);
-      window.removeEventListener('systemLabelsVisibilityChanged', handleCustomEvent as EventListener);
-      window.removeEventListener('openSettingsWithTab', handleOpenSettingsWithTab as EventListener);
-      window.removeEventListener('openComposeWithContext', handleOpenComposeWithContext as EventListener);
+      window.removeEventListener("storage", handleStorageChange);
+      window.removeEventListener(
+        "systemLabelsVisibilityChanged",
+        handleCustomEvent as EventListener
+      );
+      window.removeEventListener(
+        "openSettingsWithTab",
+        handleOpenSettingsWithTab as EventListener
+      );
+      window.removeEventListener(
+        "openComposeWithContext",
+        handleOpenComposeWithContext as EventListener
+      );
     };
   }, []);
 
@@ -724,7 +902,9 @@ export default function Mailbox() {
     if (!mailId) return;
     setLoadingSettings(true);
     try {
-      const res = await apiRequest("POST", "/setting/getSetting", { mail_Id: mailId });
+      const res = await apiRequest("POST", "/setting/getSetting", {
+        mail_Id: mailId,
+      });
       if (res.data && res.data.success) {
         setSettingsData(res.data.settings);
         setShowSettings(true);
@@ -737,7 +917,6 @@ export default function Mailbox() {
       setLoadingSettings(false);
     }
   };
-
 
   // Auth token check
   React.useEffect(() => {
@@ -773,18 +952,31 @@ export default function Mailbox() {
       const labelUniqueId = currentView.split(":")[1];
       setLabelLoading(true);
       setLabelError(null);
-      apiRequest("POST", "/email/getEmailsByLabel", { labelUniqueId })
-        .then((res) => {
-          setLabelEmails(res.data.emails || []);
+      console.log("Requesting received emails for label:", labelUniqueId);
+      console.log("Requesting sent emails for label:", labelUniqueId, "with forSendMail: true");
+      Promise.allSettled([
+        apiRequest("POST", "/email/getEmailsByLabel", { labelUniqueId }),
+        apiRequest("POST", "/email/getEmailsByLabel", { labelUniqueId, forSendMail: true })
+      ])
+        .then(([receivedResult, sentResult]) => {
+          let received = [];
+          let sent = [];
+          if (receivedResult.status === "fulfilled") {
+            received = receivedResult.value.data.emails || [];
+            console.log("Received emails:", received);
+          }
+          if (sentResult.status === "fulfilled") {
+            sent = sentResult.value.data.sendMails || [];
+            console.log("Sent emails:", sent);
+          }
+          setLabelEmails({ received, sent });
           setLabelLoading(false);
+          if (received.length === 0 && sent.length === 0) {
+            setLabelError("No emails found for this label");
+          }
         })
         .catch((err) => {
-          // Check if it's a 404 error (no emails for this label)
-          if (err.response && err.response.status === 404) {
-            setLabelError("No emails found for this label");
-          } else {
-            setLabelError(err.message || "Failed to fetch emails for label");
-          }
+          setLabelError(err.message || "Failed to fetch emails for label");
           setLabelLoading(false);
         });
     } else {
@@ -793,11 +985,10 @@ export default function Mailbox() {
     }
   }, [currentView]);
 
-
   useEffect(() => {
     console.log("location:", location);
     console.log("showSettings:", showSettings);
-    if (location && location.includes('/settings')) {
+    if (location && location.includes("/settings")) {
       setShowSettings(true);
       const tabMatch = location.match(/settings\/(\w+)/);
       if (tabMatch) setSettingsTab(tabMatch[1]);
@@ -815,6 +1006,113 @@ export default function Mailbox() {
     }
   }, [showSettings, settingsData, mailId]);
 
+  // Group emails by threadId after sorting
+  const threads = sortedEmails.reduce((acc, email) => {
+    if (!email.threadId) return acc;
+    if (!acc[email.threadId]) acc[email.threadId] = [];
+    acc[email.threadId].push(email);
+    return acc;
+  }, {} as Record<string, Email[]>);
+
+  // Thread-level filtering for tabs
+  const inboxThreads = Object.values(threads).filter(threadEmails =>
+    threadEmails.every(email =>
+      !email.isArchived && !email.isTrash && !email.isSpam && !email.isMute
+    )
+  );
+  const archiveThreads = Object.values(threads).filter(threadEmails =>
+    threadEmails.some(email => email.isArchived)
+  );
+  const trashThreads = Object.values(threads).filter(threadEmails =>
+    threadEmails.some(email => email.isTrash)
+  );
+  const spamThreads = Object.values(threads).filter(threadEmails =>
+    threadEmails.some(email => email.isSpam)
+  );
+  const mutedThreads = Object.values(threads).filter(threadEmails =>
+    threadEmails.some(email => email.isMute)
+  );
+
+  // Use these filtered arrays for rendering EmailList based on currentView
+  let threadsToShow = inboxThreads;
+  if (currentView === "archive" || currentView === "archived") {
+    threadsToShow = archiveThreads;
+  } else if (currentView === "trash") {
+    threadsToShow = trashThreads;
+  } else if (currentView === "spam") {
+    threadsToShow = spamThreads;
+  } else if (currentView === "muted") {
+    threadsToShow = mutedThreads;
+  }
+
+  // Flatten threadsToShow to a single array of emails for EmailList
+  const emailsForList = threadsToShow.map(thread => thread[0]); // Show main message for each thread
+
+  // Gmail-like ThreadView component
+  function GmailThreadView({ threadEmails }: { threadEmails: Email[] }) {
+    // Sort emails by date ascending
+    const sorted = [...threadEmails].sort((a, b) => {
+      const dateA = a.date ? new Date(a.date as string).getTime() : a.timestamp ? new Date(a.timestamp as string).getTime() : 0;
+      const dateB = b.date ? new Date(b.date as string).getTime() : b.timestamp ? new Date(b.timestamp as string).getTime() : 0;
+      return dateA - dateB;
+    });
+    // By default, expand the latest message
+    const [expandedIndex, setExpandedIndex] = useState(sorted.length - 1);
+
+    return (
+      <div className="thread border rounded mb-4 p-2 bg-white">
+        {sorted.map((email, idx) => {
+          const isExpanded = idx === expandedIndex;
+          return (
+            <div key={email.id} className="mb-2 border-b pb-2 last:border-b-0 last:pb-0">
+              <div
+                className={`flex items-center cursor-pointer ${isExpanded ? "font-bold" : ""}`}
+                onClick={() => setExpandedIndex(idx)}
+              >
+                <div className="w-8 h-8 rounded-full flex items-center justify-center bg-gray-200 text-lg font-bold mr-2">
+                  {(email.from || email.sender || "?").charAt(0).toUpperCase()}
+                </div>
+                <div className="flex-1">
+                  <div>{email.from || email.sender}</div>
+                  <div className="text-xs text-gray-500">{email.subject}</div>
+                </div>
+                <div className="text-xs text-gray-400 ml-2">
+                  {email.date ? new Date(email.date as string).toLocaleString() : email.timestamp ? new Date(email.timestamp as string).toLocaleString() : ''}
+                </div>
+              </div>
+              {isExpanded ? (
+                <div className="mt-2">
+                  <div className="text-sm" dangerouslySetInnerHTML={{ __html: email.html || email.content || '' }} />
+                  {/* Attachments, actions, etc. can go here */}
+                </div>
+              ) : (
+                <div className="text-xs text-gray-500 mt-1 truncate">
+                  {(email.html || email.content || '').replace(/<[^>]+>/g, '').slice(0, 80)}...
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {/* Reply box below the latest message (for demo, just a placeholder) */}
+        <div className="mt-4 p-2 border-t">
+          <input className="w-full border rounded p-2" placeholder="Reply... (demo only)" />
+        </div>
+      </div>
+    );
+  }
+
+  // Find the selected email object
+  const selectedEmail = emailsToShow.find(
+    (email) =>
+      email.emailUniqueId === urlEmailId ||
+      email.sendMail_Id === urlEmailId
+  );
+  console.log('DEBUG: selectedEmail', selectedEmail);
+
+  useEffect(() => {
+    setMailboxUserEmail(getUserEmailFromToken());
+  }, []);
+
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-white">
       <TopNavbar
@@ -829,48 +1127,56 @@ export default function Mailbox() {
         sidebarOpen={!sidebarCollapsed}
       />
 
-      <div className="flex flex-1 overflow-hidden relative">
+      <div className="flex flex-1 h-screen min-h-0 bg-white">
         {/* Desktop Sidebar */}
         <div className="hidden md:block border-r">
-          <LeftSidebar 
-            collapsed={sidebarCollapsed} 
+          <LeftSidebar
+            collapsed={sidebarCollapsed}
             currentView={currentView}
             onViewChange={handleViewChange}
             onCompose={() => setShowCompose(true)}
             onShowSettings={() => setShowSettings(true)}
             selectedCategory={selectedCategory}
             // onCategoryChange={handleCategoryChange}
-            mailId={mailId || ''}
+            mailId={mailId || ""}
           />
         </div>
 
         {/* Mobile Sidebar Overlay */}
-        <div className={`md:hidden fixed inset-0 z-40 transition-all duration-300 ease-out ${
-          !sidebarCollapsed ? 'opacity-100 pointer-events-auto backdrop-blur-sm' : 'opacity-0 pointer-events-none'
-        }`}>
-          <div 
+        <div
+          className={`md:hidden fixed inset-0 z-40 transition-all duration-300 ease-out ${
+            !sidebarCollapsed
+              ? "opacity-100 pointer-events-auto backdrop-blur-sm"
+              : "opacity-0 pointer-events-none"
+          }`}
+        >
+          <div
             className={`absolute inset-0 bg-black transition-opacity duration-300 ease-out ${
-              !sidebarCollapsed ? 'bg-opacity-50' : 'bg-opacity-0'
+              !sidebarCollapsed ? "bg-opacity-50" : "bg-opacity-0"
             }`}
             onClick={() => setSidebarCollapsed(true)}
           />
-          <div className={`absolute left-0 top-[48px] bottom-0 w-64 bg-white dark:bg-black shadow-2xl transform transition-all duration-300 ease-out ${
-            !sidebarCollapsed ? 'translate-x-0 scale-100' : '-translate-x-full scale-95'
-          } border-r`}>
-            <LeftSidebar 
-              collapsed={false} 
+          <div
+            className={`absolute left-0 top-[48px] bottom-0 w-64 bg-white dark:bg-black shadow-2xl transform transition-all duration-300 ease-out ${
+              !sidebarCollapsed
+                ? "translate-x-0 scale-100"
+                : "-translate-x-full scale-95"
+            } border-r`}
+          >
+            <LeftSidebar
+              collapsed={false}
               currentView={currentView}
               onViewChange={handleViewChange}
               onCompose={() => setShowCompose(true)}
               onShowSettings={() => setShowSettings(true)}
               selectedCategory={selectedCategory}
               // onCategoryChange={handleCategoryChange}
-              mailId={mailId || ''}
+              mailId={mailId || ""}
             />
           </div>
         </div>
 
-        <main className="flex-1 flex flex-col overflow-hidden min-w-0">
+        <main className="flex-1 flex flex-col h-full min-h-0 overflow-hidden">
           {showSettings && settingsData && (
             <Settings
               onClose={() => {
@@ -885,54 +1191,54 @@ export default function Mailbox() {
                 setShowFilters(true);
               }}
               initialSettings={settingsData}
-              mailId={mailId || ''}
+              mailId={mailId || ""}
             />
           )}
 
-        {/* Main content */}
-        {!showSettings && (
-          <>
-            {/* Clear Search/Filter button */}
-            {searchResults && (
-              <div className="flex justify-end p-2">
-                <button
-                  onClick={() => setSearchResults(null)}
-                  className="px-3 py-1 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded shadow text-xs"
-                >
-                  Clear Search/Filter
-                </button>
-              </div>
-            )}
-            {/* Hide EmailToolbar on mobile */}
-            {!selectedEmailId && (
-              <div className="hidden md:block">
-                <EmailToolbar 
-                  selectedCount={selectedEmails.length}
-                  onSelectAll={handleSelectAll}
-                  onMainCheckboxToggle={handleMainCheckboxToggle}
-                  onShowKeyboard={() => setShowKeyboard(true)}
-                  currentCategory={currentView === "inbox" ? selectedCategory : currentView}
-                  selectedEmails={selectedEmails}
-                  onRefresh={handleRefresh}
-                  currentPage={currentPage}
-                  totalPages={totalPages}
-                  emailsPerPage={emailsPerPage}
-                  totalEmails={searchResults ? searchResults.length : totalEmails}
-                  onPageChange={handlePageChange}
-                  onUnmuteEmails={handleUnmuteEmails}
-                  onMuteEmails={handleMuteEmails}
-                  onUnsnoozeEmails={handleUnsnoozeEmails}
-                  onBulkMarkAsRead={handleBulkMarkAsRead}
-                  onRemoveFromTasks={handleRemoveFromTasks}
-                  onUnspamEmails={handleUnspamEmails}
-                  onUnarchiveEmails={handleUnarchiveEmails}
-                  mailId={mailId || ''}
-                />
-              </div>
-            )}
+          {/* Main content */}
+          {!showSettings && (
+            <>
+              {/* Clear Search/Filter button */}
+              {searchResults && (
+                <div className="flex justify-end p-2">
+                  <button
+                    onClick={() => setSearchResults(null)}
+                    className="px-3 py-1 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded shadow text-xs"
+                  >
+                    Clear Search/Filter
+                  </button>
+                </div>
+              )}
+              {/* Hide EmailToolbar in details view */}
+              {!urlEmailId && (
+                <div className="hidden md:block">
+                  <EmailToolbar
+                    selectedCount={selectedEmails.length}
+                    onSelectAll={handleSelectAll}
+                    onMainCheckboxToggle={handleMainCheckboxToggle}
+                    onShowKeyboard={() => setShowKeyboard(true)}
+                    currentCategory={currentView === "inbox" ? selectedCategory : currentView}
+                    selectedEmails={selectedEmails}
+                    onRefresh={handleRefresh}
+                    currentPage={currentPage}
+                    totalPages={totalPages}
+                    emailsPerPage={emailsPerPage}
+                    totalEmails={searchResults ? searchResults.length : totalEmails}
+                    onPageChange={handlePageChange}
+                    onUnmuteEmails={handleUnmuteEmails}
+                    onMuteEmails={handleMuteEmails}
+                    onUnsnoozeEmails={handleUnsnoozeEmails}
+                    onBulkMarkAsRead={handleBulkMarkAsRead}
+                    onRemoveFromTasks={handleRemoveFromTasks}
+                    onUnspamEmails={handleUnspamEmails}
+                    onUnarchiveEmails={handleUnarchiveEmails}
+                    mailId={mailId || ""}
+                  />
+                </div>
+              )}
 
-            {/* Hide primary/promotions filters on mobile - they'll be in hamburger menu */}
-            {/* {currentView === "inbox" && !selectedEmailId && (
+              {/* Hide primary/promotions filters on mobile - they'll be in hamburger menu */}
+              {/* {currentView === "inbox" && !selectedEmailId && (
               <div className="hidden md:flex border-b border-gray-200 bg-white overflow-x-auto">
                 <button 
                   onClick={() => handleCategoryChange("primary")}
@@ -960,87 +1266,121 @@ export default function Mailbox() {
               </div>
             )} */}
 
-            {isLoading ? (
-              <div className="flex-1 flex items-center justify-center bg-background"><div>Loading emails...</div></div>
-            ) : !allEmails || allEmails.length === 0 ? (
-              <div className="flex-1 flex items-center justify-center bg-background"><div>No emails found.</div></div>
-            ) : selectedEmailId && selectedEmailUniqueId ? (
-              <EmailDetail 
-                mailId={mailId || ''}
-                emailUniqueId={selectedEmailUniqueId}
-                onBack={handleBackToList}
-                onOpenFilters={handleOpenFilters}
-              />
-            ) : (
-              <>
-                {labelLoading ? (
-                  <div className="flex-1 flex items-center justify-center bg-background"><div>Loading label emails...</div></div>
-                ) : labelError ? (
-                  <div className="flex-1 flex items-center justify-center bg-background">
-                    <div className="text-center">
-                      <svg 
-                        className="w-16 h-16 mx-auto mb-4 text-gray-400" 
-                        fill="none" 
-                        stroke="currentColor" 
-                        viewBox="0 0 24 24"
-                      >
-                        <path 
-                          strokeLinecap="round" 
-                          strokeLinejoin="round" 
-                          strokeWidth={1.5} 
-                          d="M3 8l7.89 4.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" 
-                        />
-                      </svg>
-                      <p className="text-lg font-medium text-gray-600 mb-2">{labelError}</p>
-                      <p className="text-sm text-gray-500">This label doesn't have any emails yet.</p>
-                    </div>
+              {(isLoading || isFetching) ? (
+                <div className="flex-1 flex items-center justify-center bg-background">
+                  <Loader />
+                </div>
+              ) : !allEmails || allEmails.length === 0 ? (
+                <div className="flex-1 flex items-center justify-center bg-background">
+                  <div>No emails found.</div>
+                </div>
+              ) : urlEmailId ? (
+                <>
+                  {console.log("[DEBUG] Rendering EmailDetail with", {
+                    mailId,
+                    emailUniqueId: urlEmailId,
+                    threadId: selectedEmail?.threadId,
+                    selectedEmail
+                  })}
+                  <EmailDetail
+                    mailId={mailId || ""}
+                    // For sent/drafts, urlEmailId is sendMail_Id; for others, it's emailUniqueId
+                    emailUniqueId={urlEmailId}
+                    threadId={selectedEmail?.threadId || null}
+                    currentView={currentView}
+                    onBack={handleBackToList}
+                    onOpenFilters={handleOpenFilters}
+                  />
+                </>
+              ) : labelLoading ? (
+                <div className="flex-1 flex items-center justify-center bg-background">
+                  <Loader />
+                </div>
+              ) : labelError ? (
+                <div className="flex-1 flex items-center justify-center bg-background">
+                  <div className="text-center">
+                    <svg
+                      className="w-16 h-16 mx-auto mb-4 text-gray-400"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={1.5}
+                        d="M3 8l7.89 4.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
+                      />
+                    </svg>
+                    <p className="text-lg font-medium text-gray-600 mb-2">
+                      {labelError}
+                    </p>
+                    <p className="text-sm text-gray-500">
+                      This label doesn't have any emails yet.
+                    </p>
                   </div>
-                ) : labelEmails ? (
-                  <EmailList 
-                    mailId={mailId || ''}
-                    category={currentView}
-                    onEmailSelect={handleEmailSelect}
-                    selectedCategory={selectedCategory}
-                    selectedEmails={selectedEmails}
-                    currentPage={currentPage}
-                    emailsPerPage={emailsPerPage}
-                    onEmailClick={(emailId, emailUniqueId) => handleEmailClick(emailId, emailUniqueId)}
-                    searchResults={searchResults ? searchResults : sortedEmails}
-                    isLoading={isLoading}
-                  />
-                ) : (
-                  <EmailList 
-                    mailId={mailId || ''}
-                    category={currentView}
-                    onEmailSelect={handleEmailSelect}
-                    selectedCategory={selectedCategory}
-                    selectedEmails={selectedEmails}
-                    currentPage={currentPage}
-                    emailsPerPage={emailsPerPage}
-                    onEmailClick={(emailId, emailUniqueId) => handleEmailClick(emailId, emailUniqueId)}
-                    searchResults={searchResults ? searchResults : sortedEmails}
-                    isLoading={isLoading}
-                  />
-                )}
-              </>
-            )}
-          </>
-        )}
+                </div>
+              ) : labelEmails ? (
+                <EmailList
+                  mailId={mailId || ""}
+                  category={currentView}
+                  onEmailSelect={handleEmailSelect}
+                  selectedCategory={selectedCategory}
+                  selectedEmails={selectedEmails}
+                  currentPage={currentPage}
+                  emailsPerPage={emailsPerPage}
+                  onEmailClick={(emailId, emailUniqueId, sendMailId) => handleEmailClick(emailId, emailUniqueId, sendMailId)}
+                  searchResults={
+                    searchResults
+                      ? searchResults
+                      : labelEmails.received.concat(labelEmails.sent)
+                  }
+                  isLoading={pageLoading || isLoading || isFetching}
+                />
+              ) : (
+                <EmailList
+                  mailId={mailId || ""}
+                  category={currentView}
+                  onEmailSelect={handleEmailSelect}
+                  selectedCategory={selectedCategory}
+                  selectedEmails={selectedEmails}
+                  currentPage={currentPage}
+                  emailsPerPage={emailsPerPage}
+                  onEmailClick={(emailId, emailUniqueId, sendMailId) => handleEmailClick(emailId, emailUniqueId, sendMailId)}
+                  searchResults={
+                    searchResults ? searchResults : emailsForList
+                  }
+                  isLoading={pageLoading || isLoading || isFetching}
+                />
+              )}
+            </>
+          )}
         </main>
 
         {/* Right Sidebar and Toggle Button */}
         <>
-          <div className={`transition-all duration-300 ease-in-out border-l bg-white dark:bg-black relative ${rightPanelCollapsed ? 'w-0 min-w-0' : ''} hidden md:flex flex-col`} style={{overflow: rightPanelCollapsed ? 'hidden' : 'visible'}}>
-            {!rightPanelCollapsed && <RightSidebar collapsed={rightPanelCollapsed} />}
+          <div
+            className={`transition-all duration-300 ease-in-out border-l bg-white dark:bg-black relative ${
+              rightPanelCollapsed ? "w-0 min-w-0" : ""
+            } hidden md:flex flex-col`}
+            style={{ overflow: rightPanelCollapsed ? "hidden" : "visible" }}
+          >
+            {!rightPanelCollapsed && (
+              <RightSidebar collapsed={rightPanelCollapsed} />
+            )}
           </div>
           {/* Toggle button always outside, same position and style */}
           <button
             onClick={() => setRightPanelCollapsed((prev) => !prev)}
-            className={`fixed bottom-6 z-20 px-3 py-1 bg-[#ffa184] text-white rounded-l-full shadow hover:bg-[#ff8c69] focus:outline-none focus:ring-2 focus:ring-[#ffa184] transition-all text-xs border-l-2 border-[#ffa184] hidden md:block ${rightPanelCollapsed ? 'right-0' : 'right-[4rem]'}`}
-            style={{outline: 'none'}}
-            aria-label={rightPanelCollapsed ? 'Show right sidebar' : 'Hide right sidebar'}
+            className={`fixed bottom-6 z-20 px-3 py-1 bg-[#ffa184] text-white rounded-l-full shadow hover:bg-[#ff8c69] focus:outline-none focus:ring-2 focus:ring-[#ffa184] transition-all text-xs border-l-2 border-[#ffa184] hidden md:block ${
+              rightPanelCollapsed ? "right-0" : "right-[2.5rem]"
+            }`}
+            style={{ outline: "none" }}
+            aria-label={
+              rightPanelCollapsed ? "Show right sidebar" : "Hide right sidebar"
+            }
           >
-            {rightPanelCollapsed ? '◀' : '▶'}
+            {rightPanelCollapsed ? "◀" : "▶"}
           </button>
         </>
       </div>
@@ -1051,8 +1391,18 @@ export default function Mailbox() {
         className="md:hidden fixed bottom-6 right-6 w-14 h-14 bg-white border-2 border-gray-300 hover:border-gray-400 text-gray-700 hover:text-gray-900 rounded-full shadow-lg hover:shadow-xl transition-all duration-200 flex items-center justify-center z-50"
         title="Compose"
       >
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+        <svg
+          className="w-5 h-5"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"
+          />
         </svg>
       </button>
 
@@ -1060,10 +1410,22 @@ export default function Mailbox() {
         <VirtualKeyboard onClose={() => setShowKeyboard(false)} />
       )}
 
-      <ComposeModal 
+      <ComposeModal
         isOpen={showCompose}
         onClose={() => setShowCompose(false)}
+        mail_Id={mailId || ""}
+        from={mailboxUserEmail}
+        setSendStatus={setSendStatus}
+        setSentMailId={setSentMailId}
       />
+      {sendStatus !== 'idle' && (
+        <SendStatusBar
+          status={sendStatus}
+          onUndo={() => {/* implement undo logic if needed */}}
+          onView={() => { if (sentMailId) {/* navigate to sent mail detail */} }}
+          onClose={() => setSendStatus('idle')}
+        />
+      )}
     </div>
   );
 }

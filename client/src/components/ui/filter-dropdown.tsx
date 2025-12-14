@@ -33,6 +33,7 @@ export default function FilterDropdown({
       <Select
         value={filterType}
         onValueChange={handleChange}
+        {...({ modal: false } as any)}
       >
         <SelectTrigger>
           <SelectValue placeholder="Filter" />

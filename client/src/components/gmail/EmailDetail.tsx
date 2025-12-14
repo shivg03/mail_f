@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import React, { useState, useEffect, useRef } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import type { Email } from "@shared/schema";
 import {
@@ -28,16 +28,22 @@ import {
   Languages,
   Download,
   FileText,
+  MoreHorizontal,
+  BookOpen
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest } from "../../lib/queryClient";
+import { apiRequest, updateConversationMessages } from "../../lib/queryClient";
 import linkifyHtml from 'linkify-html';
+import Loader from "@/components/ui/Loader";
+import { jwtDecode } from "jwt-decode";
 
-interface EmailDetailProps {
+interface mainMessageProps {
   mailId: string;
   emailUniqueId: string | null;
+  threadId: string | null; // <-- add this
   onBack: () => void;
   onOpenFilters?: () => void;
+  currentView?: string;
 }
 
 // Helper to extract name and address for display
@@ -109,17 +115,505 @@ function cleanEmailHtml(html: string): string {
   return html.replace(/<div[^>]*>\s*<br\s*\/?>(\s*)<\/div>/gi, '');
 }
 
-export default function EmailDetail({
+interface ShowMoreMenuDropdownProps {
+  open: boolean;
+  onClose: () => void;
+  handleSnoozeClick: () => void;
+  handleAddToTasksClick: () => void;
+  handleLabelSelect: (labelId: string) => void;
+  handleCreateLabel: () => void;
+  handleMuteClick: () => void;
+  handlePrintClick: () => void;
+  handleBlockClick: () => void;
+  handleTranslateClick: (msg: any) => void;
+  handleDownloadClick: () => void;
+  labelSearchQuery: string;
+  setLabelSearchQuery: (v: string) => void;
+  labelsLoading: boolean;
+  apiLabels: any[];
+  assignLabelsMutation: any;
+  removeLabelsMutation: any;
+  showCreateLabel: boolean;
+  setShowCreateLabel: (v: boolean) => void;
+  newLabelName: string;
+  setNewLabelName: (v: string) => void;
+  createLabelMutation: { isPending: boolean };
+  onOpenFilters?: () => void;
+  setShowOriginalModal: (v: boolean) => void;
+  mailId: string;
+  mainMessage: any;
+  emailUniqueId: string;
+  sendMail_Id?: string;
+}
+
+const ShowMoreMenuDropdown: React.FC<ShowMoreMenuDropdownProps> = ({
+  open,
+  onClose,
+  handleSnoozeClick,
+  handleAddToTasksClick,
+  handleLabelSelect,
+  handleCreateLabel,
+  handleMuteClick,
+  handlePrintClick,
+  handleBlockClick,
+  handleTranslateClick,
+  handleDownloadClick,
+  labelSearchQuery,
+  setLabelSearchQuery,
+  labelsLoading,
+  apiLabels,
+  assignLabelsMutation,
+  removeLabelsMutation,
+  showCreateLabel,
+  setShowCreateLabel,
+  newLabelName,
+  setNewLabelName,
+  createLabelMutation,
+  onOpenFilters,
+  setShowOriginalModal,
+  mailId,
+  mainMessage, // <-- this is the message for this dropdown
+  emailUniqueId,
+  sendMail_Id,
+}) => {
+  if (!open) return null;
+  const labelSubmenuHoverRef = useRef(false);
+  const submenuCloseTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Add ref and state for submenu positioning
+  const labelAsButtonRef = useRef<HTMLButtonElement>(null);
+  const [showLabelSubmenu, setShowLabelSubmenu] = useState(false);
+  const [submenuPosition, setSubmenuPosition] = useState<{ top: number; left: number } | null>(null);
+
+  const handleLabelParentEnter = () => {
+    if (labelAsButtonRef.current) {
+      const rect = labelAsButtonRef.current.getBoundingClientRect();
+      const submenuWidth = 256; // 16rem in px
+      let left = rect.right;
+      // If not enough space on the right, open to the left
+      if (left + submenuWidth > window.innerWidth) {
+        left = rect.left - submenuWidth;
+      }
+      setSubmenuPosition({
+        top: rect.top,
+        left,
+      });
+    }
+    setShowLabelSubmenu(true);
+  };
+  const handleLabelParentLeave = () => {
+    submenuCloseTimeoutRef.current = setTimeout(() => {
+      setShowLabelSubmenu(false);
+    }, 200);
+  };
+
+  const handleLabelSubmenuEnter = () => {
+    if (submenuCloseTimeoutRef.current) {
+      clearTimeout(submenuCloseTimeoutRef.current);
+      submenuCloseTimeoutRef.current = null;
+    }
+    setShowLabelSubmenu(true);
+  };
+
+  const handleLabelSubmenuLeave = () => {
+    setShowLabelSubmenu(false);
+  };
+
+  const labelQueryId =
+    mainMessage?.emailUniqueId || mainMessage?.sendMail_Id || "";
+
+  const { data: emailLabelsData, isLoading: emailLabelsLoading } = useQuery({
+    queryKey: [
+      "/email/getEmailLabels",
+      mainMessage?.emailUniqueId
+        ? { emailUniqueId: mainMessage.emailUniqueId }
+        : { sendmail_id: sendMail_Id || mainMessage?.sendMail_Id }
+    ],
+    queryFn: async () => {
+      const authtoken = localStorage.getItem("authtoken");
+      const headers = authtoken ? { Authorization: `Bearer ${authtoken}` } : {};
+      const body = mainMessage?.emailUniqueId
+        ? { emailUniqueId: mainMessage.emailUniqueId, __headers: headers }
+        : { sendmail_id: sendMail_Id || mainMessage?.sendMail_Id, __headers: headers };
+      const response = await apiRequest("POST", "/email/getEmailLabels", body);
+      const labels = response.data?.labels || response.data?.data?.labels || [];
+      return { labels };
+    },
+    enabled: !!labelQueryId,
+    refetchOnMount: true,
+    staleTime: 0,
+  });
+
+  const [selectedLabels, setSelectedLabels] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (emailLabelsData && Array.isArray(emailLabelsData.labels)) {
+      setSelectedLabels(emailLabelsData.labels.map((l: any) => l.labelUniqueId));
+    } else {
+      setSelectedLabels([]);
+    }
+  }, [emailLabelsData]);
+
+  if (!open) return null;
+  const handleLabelSelectLocal = (labelUniqueId: string) => {
+    const isCurrentlySelected = selectedLabels.includes(labelUniqueId);
+    if (isCurrentlySelected) {
+      setSelectedLabels(selectedLabels.filter(id => id !== labelUniqueId));
+      removeLabelsMutation.mutate({
+        labelUniqueId,
+        emailUniqueId: mainMessage.emailUniqueId,
+        sendMail_Id: sendMail_Id,
+      });
+    } else {
+      setSelectedLabels([...selectedLabels, labelUniqueId]);
+      assignLabelsMutation.mutate({
+        labelUniqueId,
+        emailUniqueId: mainMessage.emailUniqueId,
+        sendMail_Id: sendMail_Id,
+      });
+    }
+  };
+  return (
+    <div className="fixed md:right-16 right-6 top-25 w-64 bg-white dark:bg-black border rounded-lg shadow-lg z-[9999]"
+      style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+      <div className="py-2">
+        <button
+          onClick={() => {
+            handleSnoozeClick();
+            onClose();
+          }}
+          className="w-full flex items-center gap-3 px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
+        >
+          <Clock className="w-4 h-4" />
+          Snooze
+        </button>
+        <button
+          onClick={() => {
+            handleAddToTasksClick();
+            onClose();
+          }}
+          className="w-full flex items-center gap-3 px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
+        >
+          <CheckSquare className="w-4 h-4" />
+          Add to Tasks
+        </button>
+        <button
+          onClick={onClose}
+          className="w-full flex items-center gap-3 px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
+        >
+          <Calendar className="w-4 h-4" />
+          Create event
+        </button>
+        <hr className="my-2" />
+        <div
+          className="relative"
+          onMouseEnter={handleLabelParentEnter}
+          onMouseLeave={handleLabelParentLeave}
+        >
+          <button
+            ref={labelAsButtonRef}
+            className="w-full flex items-center justify-between px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
+          >
+            <div className="flex items-center gap-3 dark:text-white hover:bg-accent">
+              <Tag className="w-4 h-4" />
+              Label as
+            </div>
+            <ChevronRight className="w-4 h-4" />
+          </button>
+          {showLabelSubmenu && submenuPosition && (
+            <div
+              onMouseEnter={handleLabelSubmenuEnter}
+              onMouseLeave={handleLabelSubmenuLeave}
+              style={{
+                position: 'fixed',
+                top: submenuPosition.top,
+                left: submenuPosition.left,
+                zIndex: 10000,
+                width: '16rem',
+                background: 'white',
+                borderRadius: '0.5rem',
+                border: '1px solid #e5e7eb',
+                boxShadow: '0 4px 16px rgba(0,0,0,0.15)'
+              }}
+            >
+              <div className="p-3">
+                <div className="text-sm font-medium dark:text-white mb-2">Label as:</div>
+                <div className="">
+                  <div className="relative">
+                    <input
+                      type="text"
+                      placeholder="Search labels..."
+                      value={labelSearchQuery}
+                      onChange={(e) => setLabelSearchQuery(e.target.value)}
+                      className="w-full pl-3 pr-8 py-1.5 text-sm border-b-2 border-[#ffa184] bg-transparent dark:text-white rounded-md focus:outline-none"
+                    />
+                    <svg
+                      className="absolute right-2 top-1.5 w-4 h-4 text-gray-400"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                      />
+                    </svg>
+                  </div>
+                </div>
+                <div className="space-y-1 mb-3">
+                  {(labelsLoading || emailLabelsLoading) && (
+                    <div className="text-sm text-gray-500 px-2">
+                      Loading labels...
+                    </div>
+                  )}
+                  {!labelsLoading && !emailLabelsLoading && (!Array.isArray(apiLabels) || apiLabels.length === 0) && (
+                    <div className="text-sm text-gray-500 px-2">
+                      No labels found.
+                    </div>
+                  )}
+                  {!labelsLoading && !emailLabelsLoading && Array.isArray(apiLabels) &&
+                    apiLabels.map((label) => {
+                      const isChecked = selectedLabels.includes(label.labelUniqueId);
+                      const isUpdating = assignLabelsMutation.isPending || removeLabelsMutation.isPending;
+                      return (
+                        <label
+                          key={label.id}
+                          className="flex items-center gap-2 px-2 py-1 hover:bg-accent rounded cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            className="w-4 h-4 accent-[#ffa184]"
+                            checked={isChecked}
+                            disabled={isUpdating}
+                            onChange={() => handleLabelSelectLocal(label.labelUniqueId)}
+                          />
+                          <span className="text-sm dark:text-white">
+                            {label.name}
+                          </span>
+                        </label>
+                      );
+                    })}
+                </div>
+                <div className="border-t pt-2 space-y-1">
+                  {!showCreateLabel ? (
+                    <button
+                      onClick={() => setShowCreateLabel(true)}
+                      className="w-full text-left px-2 py-1 text-sm dark:text-white hover:bg-accent rounded"
+                    >
+                      Create new
+                    </button>
+                  ) : (
+                    <div className="px-2 py-2 space-y-2">
+                      <input
+                        type="text"
+                        placeholder="Enter label name"
+                        value={newLabelName}
+                        onChange={(e) => setNewLabelName(e.target.value)}
+                        className="w-full px-2 py-1 text-sm border rounded bg-background text-foreground"
+                        onKeyPress={(e) => e.key === "Enter" && handleCreateLabel()}
+                        autoFocus
+                      />
+                      <div className="flex space-x-2">
+                        <button
+                          onClick={handleCreateLabel}
+                          disabled={createLabelMutation.isPending}
+                          className="flex-1 px-2 py-1 text-xs text-primary-foreground rounded bg-[#ffa184] hover:bg-[#fd9474] disabled:opacity-50"
+                        >
+                          {createLabelMutation.isPending ? "Creating..." : "Create"}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setShowCreateLabel(false);
+                            setNewLabelName("");
+                          }}
+                          className="px-2 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  <button
+                    onClick={() => {
+                      onClose();
+                      window.dispatchEvent(
+                        new CustomEvent("openSettingsWithTab", {
+                          detail: { tab: "Labels" },
+                        })
+                      );
+                    }}
+                    className="w-full text-left px-2 py-1 text-sm dark:text-white hover:bg-accent rounded"
+                  >
+                    Manage labels
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+        <button
+          onClick={() => {
+            onClose();
+            onOpenFilters?.();
+          }}
+          className="w-full flex items-center gap-3 px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
+        >
+          <Filter className="w-4 h-4" />
+          Filter messages like these
+        </button>
+        <button
+          onClick={() => {
+            handleMuteClick();
+            onClose();
+          }}
+          className="w-full flex items-center gap-3 px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
+        >
+          <VolumeX className="w-4 h-4" />
+          Mute
+        </button>
+        <hr className="my-2" />
+        <button
+          onClick={() => {
+            handlePrintClick();
+            onClose();
+          }}
+          className="w-full flex items-center gap-3 px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
+        >
+          <Printer className="w-4 h-4" />
+          Print
+        </button>
+        <button
+          onClick={() => {
+            handleBlockClick();
+            onClose();
+          }}
+          className="w-full flex items-center gap-3 px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
+        >
+          <Shield className="w-4 h-4" />
+          Block sender
+        </button>
+        <button
+          onClick={() => {
+            handleTranslateClick(mainMessage);
+            onClose();
+          }}
+          className="w-full flex items-center gap-3 px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
+        >
+          <Languages className="w-4 h-4" />
+          Translate message
+        </button>
+        <button
+          onClick={() => {
+            handleDownloadClick();
+            onClose();
+          }}
+          className="w-full flex items-center gap-3 px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
+        >
+          <Download className="w-4 h-4" />
+          Download message
+        </button>
+        <button
+          onClick={() => {
+            setShowOriginalModal(true);
+            onClose();
+            // Use mainMessage.emailUniqueId or mainMessage.sendMail_Id for the URL
+            const id = mainMessage?.emailUniqueId || mainMessage?.sendMail_Id || emailUniqueId;
+            if (id) {
+              // Store rawEml in localStorage if present
+              if (mainMessage.rawEml) {
+                try {
+                  localStorage.setItem(`rawEml_${id}`, mainMessage.rawEml);
+                } catch (e) { /* ignore quota errors */ }
+              }
+              window.open(`/mailbox/m/${mailId}/${mainMessage?.mailbox || 'inbox'}/email/${id}/original`, '_blank');
+            }
+          }}
+          className="w-full flex items-center gap-3 px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
+        >
+          <FileText className="w-4 h-4" />
+          Show original
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// Utility function to get the correct payload for updating mail attributes
+function getMailUpdatePayload(message: any, updates: any) {
+  if (message.sendMail_Id) {
+    return { sendmail_id: message.sendMail_Id, ...updates };
+  } else if (message.emailUniqueId) {
+    return { emailUniqueId: message.emailUniqueId, ...updates };
+  }
+  return updates;
+}
+
+function getUserEmailFromToken() {
+  const token = localStorage.getItem("authtoken");
+  if (!token) return "";
+  try {
+    const decoded = jwtDecode(token) as any;
+    return decoded.userEmail || "";
+  } catch {
+    return "";
+  }
+}
+
+// Helper to decode RFC 2047 encoded-words (Q and B encoding)
+function decodeRFC2047(str: string): string {
+  if (!str) return "";
+  return str.replace(/=\?([^?]+)\?([bqBQ])\?([^?]*)\?=/g, (
+    _match: string,
+    charset: string,
+    encoding: string,
+    encodedText: string
+  ): string => {
+    if (/^q$/i.test(encoding)) {
+      return decodeURIComponent(
+        encodedText.replace(/_/g, " ").replace(/=([A-Fa-f0-9]{2})/g, "%$1")
+      );
+    } else if (/^b$/i.test(encoding)) {
+      try {
+        return new TextDecoder(charset).decode(Uint8Array.from(atob(encodedText.replace(/\s/g, "")), c => c.charCodeAt(0)));
+      } catch {
+        return encodedText;
+      }
+    }
+    return encodedText;
+  });
+}
+
+// Helper to decode quoted-printable encoding
+function decodeQuotedPrintable(input: string): string {
+  return input
+    .replace(/=([A-Fa-f0-9]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/=\r?\n/g, ''); // Remove soft line breaks
+}
+
+// Helper to extract and decode the first text/plain part from rawEml
+function extractPlainTextFromRawEml(raw: string): string {
+  // Find the first text/plain part with quoted-printable encoding
+  const match = raw.match(/Content-Type: text\/plain;[\s\S]*?Content-Transfer-Encoding: quoted-printable[\s\S]*?\n\n([\s\S]*?)(?:\n--|$)/i);
+  if (match && match[1]) {
+    return decodeQuotedPrintable(match[1].trim());
+  }
+  // Fallback: just return the whole body
+  return raw;
+}
+
+export default function mainMessage({
   mailId,
   emailUniqueId,
+  threadId, // <-- add this
   onBack,
   onOpenFilters,
-}: EmailDetailProps) {
-  console.log('DEBUG: EmailDetail props', { mailId, emailUniqueId });
+  currentView,
+}: mainMessageProps) {
+  console.log('DEBUG: mainMessage props', { mailId, emailUniqueId, threadId });
   const [hasMarkedAsRead, setHasMarkedAsRead] = React.useState(false);
-  const [showDetails, setShowDetails] = React.useState(false);
-  const [showMoreMenu, setShowMoreMenu] = React.useState(false);
-  const [showLabelSubmenu, setShowLabelSubmenu] = React.useState(false);
+  const [showDetailsIdx, setShowDetailsIdx] = useState<number | null>(null);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [labelSearchQuery, setLabelSearchQuery] = useState("");
   // Use string[] for selectedLabels
   const [selectedLabels, setSelectedLabels] = React.useState<string[]>([]);
@@ -130,6 +624,24 @@ export default function EmailDetail({
   const [showAttachmentModal, setShowAttachmentModal] = useState(false);
   const [modalAttachment, setModalAttachment] = useState<any | null>(null);
   const [showOriginalModal, setShowOriginalModal] = useState(false);
+  const linkifyOptions = {
+    defaultProtocol: 'https',
+    target: {
+      url: '_blank'
+    }
+  };
+
+  // 1. Add state for per-message menu and submenu hover delay
+  const [showMoreMenuIdx, setShowMoreMenuIdx] = useState<number | null>(null);
+  // 1. At the parent component level (mainMessage), manage label submenu hover and timeout globally:
+
+
+  // Add these in mainMessage (replace any old handleLabelSubmenuMouseEnter/handleLabelSubmenuMouseLeave):
+  // const handleLabelParentEnter = () => {
+  //   if (labelSubmenuCloseTimeoutRef.current) clearTimeout(labelSubmenuCloseTimeoutRef.current);
+  //   labelSubmenuHoverRef.current = true;
+  //   setShowLabelSubmenu(true);
+  // };
 
   // Fetch labels for this mailId
   const { data: apiLabels = [], isLoading: labelsLoading } = useQuery({
@@ -150,49 +662,62 @@ export default function EmailDetail({
     staleTime: 0, // Consider data stale immediately
   });
 
-  // Fetch email's assigned labels using the new backend endpoint
-  const { data: emailLabelsData, isLoading: emailLabelsLoading } = useQuery({
-    queryKey: ["/email/getEmailLabels", emailUniqueId],
+  // Fetch conversation for this thread
+  const { data: conversationData, isLoading, refetch } = useQuery({
+    queryKey: ["/mails/conversation", mailId, threadId],
     queryFn: async () => {
-      if (!emailUniqueId) return { labels: [] };
       const authtoken = localStorage.getItem("authtoken");
       const headers = authtoken ? { Authorization: `Bearer ${authtoken}` } : {};
-      const response = await apiRequest("POST", "/email/getEmailLabels", {
-        emailUniqueId,
+      const response = await apiRequest("POST", "/mails/conversation", {
+        mail_id: mailId,
+        threadId,
         __headers: headers,
       });
-      console.log('DEBUG: Email labels API response:', response.data);
-      return response.data;
+      // Support both data.conversation and data.data.conversation
+      console.log('DEBUG: Conversation API response:', response.data);
+      console.log('DEBUG: Conversation API response:', response.data?.conversation);
+      console.log('DEBUG: Conversation API response:', response.data?.data?.conversation);
+      return response.data?.conversation || response.data?.data?.conversation || [];
     },
-    enabled: !!emailUniqueId,
+    enabled: !!mailId && !!threadId,
     refetchOnMount: true,
     staleTime: 0,
   });
 
-  // Use apiRequest from '@/lib/queryClient' and useQuery for fetching email details
-  const { data: emailDetail, isLoading, refetch } = useQuery({
-    queryKey: ["/mails/getMailDetailFromStorage", mailId, emailUniqueId],
-    queryFn: async () => {
-      console.log('DEBUG: Fetching email detail', { mailId, emailUniqueId });
-      const authtoken = localStorage.getItem("authtoken");
-      const headers = authtoken ? { Authorization: `Bearer ${authtoken}` } : {};
-      const response = await apiRequest(
-        "POST",
-        "/mails/getMailDetailFromStorage",
-        {
-          mail_id: mailId,
-          emailUniqueId,
-          __headers: headers,
-        }
-      );
-      console.log('DEBUG: Email detail API response', response.data);
-      console.log('DEBUG: Email labels from API:', response.data?.labels);
-      return response.data;
-    },
-    enabled: !!mailId && !!emailUniqueId,
-    refetchOnMount: true, // Force refetch when component mounts
-    staleTime: 0, // Consider data stale immediately
-  });
+  // Use the first message as the main message for header display
+  const mainMessage = conversationData && conversationData.length > 0 ? conversationData[0] : null;
+  // Add state for the message being labeled, after mainMessage is defined
+  const [labelTargetMessage, setLabelTargetMessage] = useState<any>(mainMessage);
+
+  // Update the /email/getEmailLabels query to use the correct ID
+  const labelQueryId =
+    labelTargetMessage?.emailUniqueId ||
+    labelTargetMessage?.sendMail_Id ||
+    "";
+
+  // Fetch email's assigned labels using the new backend endpoint
+  // const { data: emailLabelsData, isLoading: emailLabelsLoading } = useQuery({
+  //   queryKey: [
+  //     "/email/getEmailLabels",
+  //     labelTargetMessage?.emailUniqueId
+  //       ? { emailUniqueId: labelTargetMessage.emailUniqueId }
+  //       : { sendmail_id: labelTargetMessage?.sendMail_Id }
+  //   ],
+  //   queryFn: async () => {
+  //     console.log("Fetching labels for", labelTargetMessage);
+  //     const authtoken = localStorage.getItem("authtoken");
+  //     const headers = authtoken ? { Authorization: `Bearer ${authtoken}` } : {};
+  //     const body = labelTargetMessage?.emailUniqueId
+  //       ? { emailUniqueId: labelTargetMessage.emailUniqueId, __headers: headers }
+  //       : { sendmail_id: labelTargetMessage?.sendMail_Id, __headers: headers };
+  //     const response = await apiRequest("POST", "/email/getEmailLabels", body);
+  //     const labels = response.data?.labels || response.data?.data?.labels || [];
+  //     return { labels };
+  //   },
+  //   enabled: !!labelQueryId,
+  //   refetchOnMount: true,
+  //   staleTime: 0,
+  // });
 
   // Create label mutation
   const createLabelMutation = useMutation({
@@ -244,14 +769,9 @@ export default function EmailDetail({
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({
-        predicate: (query) => {
-          const firstKey = query.queryKey[0];
-          return (
-            typeof firstKey === "string" && firstKey.startsWith("/api/emails")
-          );
-        },
-      });
+      // Explicitly invalidate conversation and mail detail queries
+      queryClient.invalidateQueries({ queryKey: ["/mails/conversation", mailId, threadId] });
+      queryClient.invalidateQueries({ queryKey: ["/mails/getMailDetailFromStorage", mailId, emailUniqueId] });
       queryClient.invalidateQueries({ queryKey: ["/email/allmails"] });
     },
     onError: (error: any) => {
@@ -264,13 +784,14 @@ export default function EmailDetail({
   });
 
   const assignLabelsMutation = useMutation({
-    mutationFn: async ({ labelUniqueId, emailUniqueId }: { labelUniqueId: string; emailUniqueId: string }) => {
+    mutationFn: async ({ labelUniqueId, emailUniqueId, sendMail_Id }: { labelUniqueId: string; emailUniqueId?: string; sendMail_Id?: string }) => {
       console.log('DEBUG: Calling assignLabelsToEmail API with:', { labelUniqueId, emailUniqueId, mailId });
       const authtoken = localStorage.getItem("authtoken");
       const headers = authtoken ? { Authorization: `Bearer ${authtoken}` } : {};
       const response = await apiRequest("POST", "/email/assignLabelsToEmail", {
         labelUniqueId,
         emailUniqueId,
+        sendmail_id: sendMail_Id,
         replace: false, // Add labels without removing existing ones
         __headers: headers,
       });
@@ -281,12 +802,13 @@ export default function EmailDetail({
       console.log('DEBUG: assignLabelsMutation onSuccess called with:', data);
       toast({ title: "Labels updated", description: "Labels assigned to email." });
       // Invalidate email labels query to refresh the assigned labels
-      queryClient.invalidateQueries({ 
-        queryKey: ["/email/getEmailLabels", emailUniqueId] 
+      queryClient.invalidateQueries({
+        queryKey: ["/email/getEmailLabels", labelQueryId]
       });
+      queryClient.refetchQueries({ queryKey: ["/email/getEmailLabels", labelQueryId] });
       // Invalidate email detail query to refresh the email data
-      queryClient.invalidateQueries({ 
-        queryKey: ["/mails/getMailDetailFromStorage", mailId, emailUniqueId] 
+      queryClient.invalidateQueries({
+        queryKey: ["/mails/getMailDetailFromStorage", mailId, labelQueryId]
       });
       // Also invalidate labels query to ensure consistency
       queryClient.invalidateQueries({ queryKey: ["/label/getLabels", mailId] });
@@ -298,13 +820,14 @@ export default function EmailDetail({
   });
 
   const removeLabelsMutation = useMutation({
-    mutationFn: async ({ labelUniqueId, emailUniqueId }: { labelUniqueId: string; emailUniqueId: string }) => {
+    mutationFn: async ({ labelUniqueId, emailUniqueId, sendMail_Id }: { labelUniqueId: string; emailUniqueId?: string; sendMail_Id?: string }) => {
       console.log('DEBUG: Calling removeLabelsFromEmail API with:', { labelUniqueId, emailUniqueId, mailId });
       const authtoken = localStorage.getItem("authtoken");
       const headers = authtoken ? { Authorization: `Bearer ${authtoken}` } : {};
       const response = await apiRequest("POST", "/email/removeLabelsFromEmail", {
         labelUniqueId,
         emailUniqueId,
+        sendmail_id: sendMail_Id,
         __headers: headers,
       });
       console.log('DEBUG: removeLabelsFromEmail API response:', response);
@@ -314,12 +837,13 @@ export default function EmailDetail({
       console.log('DEBUG: removeLabelsMutation onSuccess called with:', data);
       toast({ title: "Labels updated", description: "Labels removed from email." });
       // Invalidate email labels query to refresh the assigned labels
-      queryClient.invalidateQueries({ 
-        queryKey: ["/email/getEmailLabels", emailUniqueId] 
+      queryClient.invalidateQueries({
+        queryKey: ["/email/getEmailLabels", labelQueryId]
       });
+      queryClient.refetchQueries({ queryKey: ["/email/getEmailLabels", labelQueryId] });
       // Invalidate email detail query to refresh the email data
-      queryClient.invalidateQueries({ 
-        queryKey: ["/mails/getMailDetailFromStorage", mailId, emailUniqueId] 
+      queryClient.invalidateQueries({
+        queryKey: ["/mails/getMailDetailFromStorage", mailId, labelQueryId]
       });
       // Also invalidate labels query to ensure consistency
       queryClient.invalidateQueries({ queryKey: ["/label/getLabels", mailId] });
@@ -330,131 +854,119 @@ export default function EmailDetail({
     }
   });
 
-  // Initialize selectedLabels when email labels or available labels data changes
-  React.useEffect(() => {
-    console.log('DEBUG: Initializing selectedLabels', { emailLabelsData, apiLabels });
-    if (emailLabelsData && Array.isArray(apiLabels) && apiLabels.length > 0) {
-      const emailLabels = emailLabelsData.labels || [];
-      console.log('DEBUG: Email labels from API:', emailLabels);
-      console.log('DEBUG: Available API labels:', apiLabels);
-      
-      // Map the email's assigned labels to their labelUniqueIds
-      const selectedLabelIds = emailLabels.map((emailLabel: any) => emailLabel.labelUniqueId);
-      
-      console.log('DEBUG: Final selected label IDs:', selectedLabelIds);
-      setSelectedLabels(selectedLabelIds);
-    } else {
-      console.log('DEBUG: No email labels or API labels available');
-      setSelectedLabels([]);
-    }
-  }, [emailLabelsData, apiLabels]);
+  // Update selectedLabels effect to use the correct message's labels
+  // React.useEffect(() => {
+  //   if (emailLabelsData && Array.isArray(emailLabelsData.labels)) {
+  //     const selectedLabelIds = emailLabelsData.labels.map((emailLabel: any) => emailLabel.labelUniqueId);
+  //     setSelectedLabels(selectedLabelIds);
+  //   } else {
+  //     setSelectedLabels([]);
+  //   }
+  // }, [emailLabelsData]);
 
-  // Mark email as seen when opened (only once)
+  const userEmail = getUserEmailFromToken();
+  // Mark as read logic for received messages only
   React.useEffect(() => {
-    console.log('DEBUG: Effect run', {
-      emailDetail,
-      isUnread: emailDetail?.isUnread,
-      hasMarkedAsRead,
-      emailUniqueId
-    });
-    if (emailDetail && emailDetail.isUnread && !hasMarkedAsRead && emailUniqueId) {
-      console.log('DEBUG: About to call updateEmailAttributesMutation.mutate', { emailUniqueId });
-      setHasMarkedAsRead(true);
-      updateEmailAttributesMutation.mutate({
-        emailUniqueId,
-        seen: true,
+    if (Array.isArray(conversationData)) {
+      conversationData.forEach((msg) => {
+        // Only mark as read if:
+        // - isUnread is true
+        // - The message is received by the current user
+        if (
+          msg.isUnread &&
+          (msg.to === userEmail || msg.recipient === userEmail)
+        ) {
+          updateEmailAttributesMutation.mutate(getMailUpdatePayload(msg, {
+            emailUniqueId: msg.emailUniqueId,
+            seen: true,
+          }));
+        }
       });
     }
-  }, [emailDetail?.isUnread, hasMarkedAsRead, updateEmailAttributesMutation, emailUniqueId]);
+  }, [conversationData, userEmail]);
 
   // Remove old per-action mutations (starMutation, archiveMutation, spamMutation, taskMutation, muteMutation, snoozeMutation, deleteMutation, importantMutation)
 
   // Handlers using the new mutation:
-  const handleStarClick = () => {
-    if (emailDetail && emailUniqueId) {
-      updateEmailAttributesMutation.mutate(
-        {
-          emailUniqueId,
-          isStarred: !emailDetail.isStarred,
-        },
-        {
-          onSuccess: () => {
-            refetch();
-          }
-        }
-      );
+  const handleStarClick = async (msg: any) => {
+    if (msg && (msg.emailUniqueId || msg.sendMail_Id)) {
+      const newStarValue = !msg.isStarred;
+      // Star/unstar the clicked message
+      await updateEmailAttributesMutation.mutateAsync(getMailUpdatePayload(msg, {
+        emailUniqueId: msg.emailUniqueId,
+        sendmail_id: msg.sendMail_Id,
+        isStarred: newStarValue,
+      }));
+
+      // Star/unstar the main message if it's not the same as the clicked message
+      if (
+        mainMessage &&
+        (mainMessage.emailUniqueId !== msg.emailUniqueId || mainMessage.sendMail_Id !== msg.sendMail_Id)
+      ) {
+        await updateEmailAttributesMutation.mutateAsync(getMailUpdatePayload(mainMessage, {
+          emailUniqueId: mainMessage.emailUniqueId,
+          sendmail_id: mainMessage.sendMail_Id,
+          isStarred: newStarValue,
+        }));
+      }
+
+      // If un-starring, also unstar all conversation messages
+      if (!newStarValue && Array.isArray(conversationData)) {
+        await Promise.all(
+          conversationData.map(async (convMsg: any) => {
+            if (convMsg.isStarred) {
+              await updateEmailAttributesMutation.mutateAsync(getMailUpdatePayload(convMsg, {
+                emailUniqueId: convMsg.emailUniqueId,
+                sendmail_id: convMsg.sendMail_Id,
+                isStarred: false,
+              }));
+            }
+          })
+        );
+      }
     }
   };
 
-  const handleArchiveClick = () => {
-    if (emailDetail && emailUniqueId) {
-      updateEmailAttributesMutation.mutate(
-        {
-          emailUniqueId,
-          isArchived: !emailDetail.isArchived,
-        },
-        {
-          onSuccess: () => {
-            refetch();
-          }
-        }
-      );
+  const handleArchiveClick = async () => {
+    if (mainMessage && threadId && mailId) {
+      const authtoken = localStorage.getItem("authtoken") || "";
+      await updateConversationMessages(mailId, threadId, { isArchived: !mainMessage.isArchived }, authtoken);
       toast({
-        title: !emailDetail.isArchived ? "Email archived" : "Email unarchived",
-        description: !emailDetail.isArchived ? "The email has been moved to archive." : "The email has been removed from archive.",
+        title: !mainMessage.isArchived ? "Email archived" : "Email unarchived",
+        description: !mainMessage.isArchived ? "The email has been moved to archive." : "The email has been removed from archive.",
       });
       onBack();
     }
   };
 
-  const handleReportSpam = () => {
-    if (emailDetail && emailUniqueId) {
-      updateEmailAttributesMutation.mutate(
-        {
-          emailUniqueId,
-          isSpam: !emailDetail.isSpam,
-        },
-        {
-          onSuccess: () => {
-            refetch();
-          }
-        }
-      );
+  const handleReportSpam = async () => {
+    if (mainMessage && threadId && mailId) {
+      const authtoken = localStorage.getItem("authtoken") || "";
+      await updateConversationMessages(mailId, threadId, { isSpam: !mainMessage.isSpam }, authtoken);
       toast({
-        title: !emailDetail.isSpam ? "Reported as spam" : "Removed from spam",
-        description: !emailDetail.isSpam ? "The email has been moved to spam." : "The email has been removed from spam.",
+        title: !mainMessage.isSpam ? "Reported as spam" : "Removed from spam",
+        description: !mainMessage.isSpam ? "The email has been moved to spam." : "The email has been removed from spam.",
       });
       onBack();
     }
   };
 
-  const handleDeleteClick = () => {
-    if (emailDetail && emailUniqueId) {
-      updateEmailAttributesMutation.mutate(
-        {
-          emailUniqueId,
-          isTrash: !emailDetail.isTrash,
-        },
-        {
-          onSuccess: () => {
-            refetch();
-          }
-        }
-      );
+  const handleDeleteClick = async () => {
+    if (mainMessage && threadId && mailId) {
+      const authtoken = localStorage.getItem("authtoken") || "";
+      await updateConversationMessages(mailId, threadId, { isTrash: !mainMessage.isTrash }, authtoken);
       toast({
-        title: !emailDetail.isTrash ? "Email deleted" : "Email restored",
-        description: !emailDetail.isTrash ? "The email has been moved to trash." : "The email has been restored from trash.",
+        title: !mainMessage.isTrash ? "Email deleted" : "Email restored",
+        description: !mainMessage.isTrash ? "The email has been moved to trash." : "The email has been restored from trash.",
       });
       onBack();
     }
   };
 
-  const handleMarkAsUnread = () => {
-    if (emailDetail && emailUniqueId) {
-      updateEmailAttributesMutation.mutate({
-        emailUniqueId,
-        seen: false,
-      });
+  const handleMarkAsUnread = async () => {
+    if (mainMessage && threadId && mailId) {
+      const authtoken = localStorage.getItem("authtoken") || "";
+      await updateConversationMessages(mailId, threadId, { seen: false }, authtoken);
       toast({
         title: "Marked as unread",
         description: "The email has been marked as unread.",
@@ -462,93 +974,61 @@ export default function EmailDetail({
     }
   };
 
-  const handleSnoozeClick = () => {
-    if (emailDetail && emailUniqueId) {
-      updateEmailAttributesMutation.mutate(
-        {
-          emailUniqueId,
-          isSnoozed: !emailDetail.isSnoozed,
-        },
-        {
-          onSuccess: () => {
-            refetch();
-          }
-        }
-      );
+  const handleSnoozeClick = async () => {
+    if (mainMessage && threadId && mailId) {
+      const authtoken = localStorage.getItem("authtoken") || "";
+      await updateConversationMessages(mailId, threadId, { isSnoozed: !mainMessage.isSnoozed }, authtoken);
       toast({
-        title: !emailDetail.isSnoozed ? "Email snoozed" : "Snooze removed",
-        description: !emailDetail.isSnoozed ? "Email has been snoozed." : "Snooze removed from email.",
+        title: !mainMessage.isSnoozed ? "Email snoozed" : "Snooze removed",
+        description: !mainMessage.isSnoozed ? "Email has been snoozed." : "Snooze removed from email.",
       });
-      onBack();
+      onBack && onBack();
     }
   };
 
-  const handleAddToTasksClick = () => {
-    if (emailDetail && emailUniqueId) {
-      updateEmailAttributesMutation.mutate(
-        {
-          emailUniqueId,
-          isAddToTask: !emailDetail.isAddToTask,
-        },
-        {
-          onSuccess: () => {
-            refetch();
-          }
-        }
-      );
+  const handleAddToTasksClick = async () => {
+    if (mainMessage && threadId && mailId) {
+      const authtoken = localStorage.getItem("authtoken") || "";
+      await updateConversationMessages(mailId, threadId, { isAddToTask: !mainMessage.isAddToTask }, authtoken);
       toast({
-        title: !emailDetail.isAddToTask ? "Added to Tasks" : "Removed from Tasks",
-        description: !emailDetail.isAddToTask ? "Email has been added to your Tasks." : "Email has been removed from your Tasks.",
+        title: !mainMessage.isAddToTask ? "Added to tasks" : "Removed from tasks",
+        description: !mainMessage.isAddToTask ? "Email has been added to tasks." : "Email has been removed from tasks.",
       });
+      onBack && onBack();
     }
   };
 
-  const handleMuteClick = () => {
-    if (emailDetail && emailUniqueId) {
-      updateEmailAttributesMutation.mutate(
-        {
-          emailUniqueId,
-          isMute: !emailDetail.isMute,
-        },
-        {
-          onSuccess: () => {
-            refetch();
-          }
-        }
-      );
+  const handleMuteClick = async () => {
+    if (mainMessage && threadId && mailId) {
+      const authtoken = localStorage.getItem("authtoken") || "";
+      await updateConversationMessages(mailId, threadId, { isMute: !mainMessage.isMute }, authtoken);
       toast({
-        title: !emailDetail.isMute ? "Conversation muted" : "Conversation unmuted",
-        description: !emailDetail.isMute ? "You won't be notified of new messages in this conversation." : "You will be notified of new messages in this conversation.",
+        title: !mainMessage.isMute ? "Email muted" : "Unmuted",
+        description: !mainMessage.isMute ? "Email has been muted." : "Email has been unmuted.",
       });
+      onBack && onBack();
     }
   };
 
-  const handleLabelSelect = async (labelUniqueId: string) => {
-    console.log('handleLabelSelect called', { labelUniqueId, emailDetail, selectedLabels });
-    console.log('emailDetail.emailUniqueId:', emailDetail?.emailUniqueId);
-    
+  // Update handleLabelSelect to accept a message argument
+  const handleLabelSelect = async (labelUniqueId: string, msg: any) => {
     const isCurrentlySelected = selectedLabels.includes(labelUniqueId);
-    console.log('DEBUG: Label currently selected:', isCurrentlySelected);
-    
-    // Don't update local state immediately - wait for API response
-    if (emailUniqueId) {
-      if (isCurrentlySelected) {
-        // Label is currently selected, so remove it
-        console.log('Removing label:', labelUniqueId, 'from email:', emailUniqueId);
-        removeLabelsMutation.mutate({
-          labelUniqueId,
-          emailUniqueId,
-        });
-      } else {
-        // Label is not selected, so add it
-        console.log('Adding label:', labelUniqueId, 'to email:', emailUniqueId);
-        assignLabelsMutation.mutate({
-          labelUniqueId,
-          emailUniqueId,
-        });
-      }
+
+    // Optimistically update the UI
+    if (isCurrentlySelected) {
+      setSelectedLabels(selectedLabels.filter(id => id !== labelUniqueId));
+      removeLabelsMutation.mutate({
+        labelUniqueId,
+        emailUniqueId: msg.emailUniqueId,
+        sendMail_Id: msg.sendMail_Id,
+      });
     } else {
-      console.log('No emailUniqueId found (prop):', emailUniqueId);
+      setSelectedLabels([...selectedLabels, labelUniqueId]);
+      assignLabelsMutation.mutate({
+        labelUniqueId,
+        emailUniqueId: msg.emailUniqueId,
+        sendMail_Id: msg.sendMail_Id,
+      });
     }
   };
 
@@ -564,29 +1044,36 @@ export default function EmailDetail({
   };
 
   const handleReplyClick = () => {
-    if (emailDetail) {
-      // Extract sender email address
-      const senderEmail =
-        emailDetail.sender?.match(/<(.+)>/)?.[1] || emailDetail.sender || "";
+    if (mainMessage) {
+      // Use 'from' for the sender's email in inbox
+      const senderEmail = mainMessage.from || "";
 
-      // Create reply context with "Replying to message" text
+      // Format the quoted original message
+      const originalDate = mainMessage.date
+        ? new Date(mainMessage.date).toLocaleString()
+        : "Unknown date";
+      const latestMessage = Array.isArray(conversationData) && conversationData.length > 0
+        ? conversationData[conversationData.length - 1]
+        : mainMessage;
+      const originalFrom = latestMessage.from || "";
+      const originalSubject = latestMessage.subject || "";
+      const originalContent = latestMessage.parsedHtml || latestMessage.html || latestMessage.content || "";
+
+      const quotedHtml = `
+      <blockquote style="border-left:2px solid #ccc; margin-left:1em; padding-left:1em; color:#555; background:#f9f9f9;">
+        On ${originalDate}, ${originalFrom} wrote:<br>
+        ${originalContent}
+      </blockquote>
+    `;
       const replyContext = {
         to: senderEmail,
-        subject: emailDetail.subject?.startsWith("Re:")
-          ? emailDetail.subject
-          : `Re: ${emailDetail.subject}`,
-        body: `\n\nReplying to message:\n\n--- Original Message ---\nFrom: ${
-          emailDetail.sender
-        }\nDate: ${
-          emailDetail.timestamp
-            ? new Date(emailDetail.timestamp).toLocaleString()
-            : "Unknown date"
-        }\nSubject: ${emailDetail.subject}\n\n${emailDetail.content}`,
+        subject: originalSubject.startsWith("Re:") ? originalSubject : `Re: ${originalSubject}`,
+        body: `<br><br>${quotedHtml}`,
         isReply: true,
-        originalEmailId: emailDetail.id,
+        replyToMessageId: mainMessage.messageId, // <-- use the real messageId here!
+        threadId: mainMessage.threadId,
       };
 
-      // Dispatch custom event to open compose modal with reply context
       window.dispatchEvent(
         new CustomEvent("openComposeWithContext", {
           detail: replyContext,
@@ -596,30 +1083,37 @@ export default function EmailDetail({
   };
 
   const handleReplyAllClick = () => {
-    if (emailDetail) {
-      // Extract sender email address
-      const senderEmail =
-        emailDetail.sender?.match(/<(.+)>/)?.[1] || emailDetail.sender || "";
+    if (mainMessage) {
+      // Use 'from' for the sender's email in inbox
+      const senderEmail = mainMessage.from || "";
+      // For reply all, you may want to include other recipients (cc, bcc) if available
+      // For now, just reply to sender
+      const originalDate = mainMessage.date
+        ? new Date(mainMessage.date).toLocaleString()
+        : "Unknown date";
+      const latestMessage = Array.isArray(conversationData) && conversationData.length > 0
+        ? conversationData[conversationData.length - 1]
+        : mainMessage;
+      const originalFrom = latestMessage.from || "";
+      const originalSubject = latestMessage.subject || "";
+      const originalContent = latestMessage.parsedHtml || latestMessage.html || latestMessage.content || "";
 
-      // For reply all, we'd typically include CC recipients as well
-      // Since we don't have CC info in the current email schema, we'll just reply to sender
+      const quotedHtml = `
+        <blockquote style="border-left:2px solid #ccc; margin-left:1em; padding-left:1em; color:#555; background:#f9f9f9;">
+          On ${originalDate}, ${originalFrom} wrote:<br>
+          ${originalContent}
+        </blockquote>
+      `;
+
       const replyAllContext = {
         to: senderEmail,
-        subject: emailDetail.subject?.startsWith("Re:")
-          ? emailDetail.subject
-          : `Re: ${emailDetail.subject}`,
-        body: `\n\nReplying to message:\n\n--- Original Message ---\nFrom: ${
-          emailDetail.sender
-        }\nDate: ${
-          emailDetail.timestamp
-            ? new Date(emailDetail.timestamp).toLocaleString()
-            : "Unknown date"
-        }\nSubject: ${emailDetail.subject}\n\n${emailDetail.content}`,
+        subject: originalSubject.startsWith("Re:") ? originalSubject : `Re: ${originalSubject}`,
+        body: `<br><br>${quotedHtml}`,
         isReplyAll: true,
-        originalEmailId: emailDetail.id,
+        replyToMessageId: mainMessage.messageId, // <-- use the real messageId here!
+        threadId: mainMessage.threadId,
       };
 
-      // Dispatch custom event to open compose modal with reply all context
       window.dispatchEvent(
         new CustomEvent("openComposeWithContext", {
           detail: replyAllContext,
@@ -629,27 +1123,39 @@ export default function EmailDetail({
   };
 
   const handleForwardClick = () => {
-    if (emailDetail) {
-      // Create forward context with original message content
+    if (mainMessage) {
+      // Use 'from' for the sender's email in inbox
+      const originalDate = mainMessage.date
+        ? new Date(mainMessage.date).toLocaleString()
+        : "Unknown date";
+      const latestMessage = Array.isArray(conversationData) && conversationData.length > 0
+        ? conversationData[conversationData.length - 1]
+        : mainMessage;
+      const originalFrom = latestMessage.from || "";
+      const originalTo = latestMessage.to || "";
+      const originalSubject = latestMessage.subject || "";
+      const originalContent = latestMessage.parsedHtml || latestMessage.html || latestMessage.content || "";
+
+      const quotedHtml = `
+      <blockquote style="border-left:2px solid #ccc; margin-left:1em; padding-left:1em; color:#555; background:#f9f9f9;">
+        ---------- Forwarded message ----------<br>
+        From: ${originalFrom}<br>
+        Date: ${originalDate}<br>
+        Subject: ${originalSubject}<br>
+        To: ${originalTo}<br><br>
+        ${originalContent}
+      </blockquote>
+    `;
+
       const forwardContext = {
         to: "",
-        subject: emailDetail.subject?.startsWith("Fwd:")
-          ? emailDetail.subject
-          : `Fwd: ${emailDetail.subject}`,
-        body: `\n\n---------- Forwarded message ----------\nFrom: ${
-          emailDetail.sender
-        }\nDate: ${
-          emailDetail.timestamp
-            ? new Date(emailDetail.timestamp).toLocaleString()
-            : "Unknown date"
-        }\nSubject: ${emailDetail.subject}\nTo: ${emailDetail.recipient}\n\n${
-          emailDetail.content
-        }`,
+        subject: originalSubject.startsWith("Fwd:") ? originalSubject : `Fwd: ${originalSubject}`,
+        body: `<br><br>${quotedHtml}`,
         isForward: true,
-        originalEmailId: emailDetail.id,
+        originalEmailId: mainMessage.id,
+        threadId: mainMessage.threadId,
       };
 
-      // Dispatch custom event to open compose modal with forward context
       window.dispatchEvent(
         new CustomEvent("openComposeWithContext", {
           detail: forwardContext,
@@ -668,130 +1174,81 @@ export default function EmailDetail({
   };
 
   const handleBlockClick = () => {
-    if (emailDetail) {
+    if (mainMessage) {
       toast({
         title: "Sender blocked",
-        description: `${emailDetail.sender} has been blocked. Future emails will be automatically sent to spam.`,
+        description: `${mainMessage.sender} has been blocked. Future emails will be automatically sent to spam.`,
       });
     }
   };
 
-  const handleTranslateClick = () => {
-    if (emailDetail) {
-      // Create a simple translation interface
-      const content = emailDetail.content || "No content available";
-      const translationWindow = window.open(
-        "",
-        "_blank",
-        "width=800,height=600"
-      );
-
-      if (translationWindow) {
-        translationWindow.document.write(`
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <title>Translate Email - ${emailDetail.subject}</title>
-            <style>
-              body { font-family: Arial, sans-serif; padding: 20px; line-height: 1.6; }
-              .container { max-width: 800px; margin: 0 auto; }
-              .email-header { background: #f5f5f5; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
-              .email-content { background: white; padding: 20px; border: 1px solid #ddd; border-radius: 5px; margin-bottom: 20px; }
-              .translate-section { background: #e3f2fd; padding: 15px; border-radius: 5px; }
-              select, button { padding: 8px 12px; margin: 5px; font-size: 14px; }
-              button { background: #1976d2; color: white; border: none; border-radius: 3px; cursor: pointer; }
-              button:hover { background: #1565c0; }
-              .translated-content { background: #f9f9f9; padding: 15px; margin-top: 10px; border-radius: 5px; border-left: 4px solid #4caf50; }
-            </style>
-          </head>
-          <body>
-            <div class="container">
-              <h2>Email Translation</h2>
-              <div class="email-header">
-                <strong>From:</strong> ${emailDetail.sender}<br>
-                <strong>Subject:</strong> ${emailDetail.subject}<br>
-                <strong>Date:</strong> ${new Date(
-                  emailDetail.timestamp || Date.now()
-                ).toLocaleDateString()}
-              </div>
-              
-              <div class="email-content">
-                <h4>Original Message:</h4>
-                <p>${content}</p>
-              </div>
-              
-              <div class="translate-section">
-                <h4>Translation Options:</h4>
-                <label for="targetLang">Translate to: </label>
-                <select id="targetLang">
-                  <option value="es">Spanish</option>
-                  <option value="fr">French</option>
-                  <option value="de">German</option>
-                  <option value="it">Italian</option>
-                  <option value="pt">Portuguese</option>
-                  <option value="ru">Russian</option>
-                  <option value="ja">Japanese</option>
-                  <option value="ko">Korean</option>
-                  <option value="zh">Chinese (Simplified)</option>
-                  <option value="ar">Arabic</option>
-                </select>
-                <button onclick="translateText()">Translate</button>
-                <button onclick="window.close()">Close</button>
-                
-                <div id="translatedResult" class="translated-content" style="display: none;">
-                  <h4>Translated Message:</h4>
-                  <div id="translatedText"></div>
-                  <small><em>Note: This is a simulated translation. For real translation, integrate with Google Translate API or similar service.</em></small>
-                </div>
-              </div>
-            </div>
-            
-            <script>
-              function translateText() {
-                const targetLang = document.getElementById('targetLang').value;
-                const langNames = {
-                  es: 'Spanish', fr: 'French', de: 'German', it: 'Italian',
-                  pt: 'Portuguese', ru: 'Russian', ja: 'Japanese', ko: 'Korean',
-                  zh: 'Chinese', ar: 'Arabic'
-                };
-                
-                // Simulate translation (in real app, this would call translation API)
-                const originalText = \`${content.replace(/`/g, "\\`")}\`;
-                const simulatedTranslation = \`[Translated to \${langNames[targetLang]}] \${originalText}\`;
-                
-                document.getElementById('translatedText').innerHTML = simulatedTranslation;
-                document.getElementById('translatedResult').style.display = 'block';
-              }
-            </script>
-          </body>
-          </html>
-        `);
-
-        toast({
-          title: "Translation window opened",
-          description: "Translation interface opened in a new window.",
-        });
+  // Update handleTranslateClick to accept a message argument
+  const handleTranslateClick = (msg: any) => {
+    if (msg) {
+      let from = msg.sender || msg.from || "";
+      let subject = msg.subject || "";
+      let date = msg.timestamp
+        ? new Date(msg.timestamp).toLocaleDateString()
+        : (msg.date ? new Date(msg.date).toLocaleDateString() : "");
+      let body = msg.content || msg.parsedText || msg.parsedHtml || "No content available";
+      let id = msg.emailUniqueId || msg.sendMail_Id || msg.id || "";
+      let mailbox = msg.mailbox || 'inbox';
+      if (msg.rawEml) {
+        const raw = msg.rawEml;
+        const headers: Record<string, string> = {};
+        const lines = raw.split(/\r?\n/);
+        let currentHeader = '';
+        let i = 0;
+        for (; i < lines.length; i++) {
+          const line = lines[i];
+          if (/^[A-Za-z0-9\-]+: /.test(line)) {
+            const [key, ...rest] = line.split(': ');
+            currentHeader = key.toLowerCase();
+            headers[currentHeader] = rest.join(': ');
+          } else if ((line.startsWith(' ') || line.startsWith('\t')) && currentHeader) {
+            headers[currentHeader] += ' ' + line.trim();
+          } else if (line.trim() === '') {
+            i++;
+            break;
+          }
+        }
+        from = decodeRFC2047(headers['from']) || from;
+        subject = decodeRFC2047(headers['subject']) || subject;
+        date = headers['date'] || date;
+        // Use extracted and decoded plain text part if available
+        const extracted = extractPlainTextFromRawEml(raw);
+        body = extracted || lines.slice(i).join('\n') || body;
+        try {
+          localStorage.setItem(`translateRawEml_${id}`, JSON.stringify({ rawEml: raw, from, subject, date, body }));
+        } catch (e) { /* ignore quota errors */ }
+      } else {
+        try {
+          localStorage.setItem(`translateRawEml_${id}`, JSON.stringify({ from, subject, date, body }));
+        } catch (e) { /* ignore quota errors */ }
+      }
+      if (id) {
+        window.open(`/mailbox/m/${mailId}/${mailbox}/email/${id}/translate`, '_blank');
       }
     }
   };
 
   const handleDownloadClick = () => {
-    if (emailDetail) {
+    if (mainMessage) {
       // Create EML format content
-      const emlContent = `Message-ID: <${emailDetail.id}@gmail.com>
-Date: ${new Date(emailDetail.timestamp || Date.now()).toUTCString()}
-From: ${emailDetail.sender || "Unknown Sender"} <${(
-        emailDetail.sender || "unknown"
-      )
-        .toLowerCase()
-        .replace(/\s+/g, ".")}@example.com>
-To: ${emailDetail.recipient || "user@gmail.com"}
-Subject: ${emailDetail.subject || "No Subject"}
+      const emlContent = `Message-ID: <${mainMessage.id}@gmail.com>
+Date: ${new Date(mainMessage.timestamp || Date.now()).toUTCString()}
+From: ${mainMessage.sender || "Unknown Sender"} <${(
+          mainMessage.sender || "unknown"
+        )
+          .toLowerCase()
+          .replace(/\s+/g, ".")}@example.com>
+To: ${mainMessage.recipient || "user@gmail.com"}
+Subject: ${mainMessage.subject || "No Subject"}
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-${emailDetail.content || "No content available"}
+${mainMessage.content || "No content available"}
 
 --
 This email was downloaded from Gmail Clone
@@ -804,7 +1261,7 @@ This email was downloaded from Gmail Clone
       link.href = url;
 
       // Create safe filename
-      const safeSubject = (emailDetail.subject || "no_subject")
+      const safeSubject = (mainMessage.subject || "no_subject")
         .replace(/[^a-z0-9]/gi, "_")
         .toLowerCase();
       const timestamp = new Date().toISOString().slice(0, 10);
@@ -821,6 +1278,12 @@ This email was downloaded from Gmail Clone
       });
     }
   };
+
+  const handleSummaryClick = () => {
+    // Using history.push if you use react-router-dom
+    window.location.href = `/mailbox/m/${mailId}/${threadId}/summary`;
+  };
+
 
   const formatDateTime = (timestamp: Date) => {
     const emailDate = new Date(timestamp);
@@ -851,13 +1314,11 @@ This email was downloaded from Gmail Clone
     // If email is from today
     if (diffInDays === 0) {
       if (diffInMinutes < 60) {
-        return `${timeString} (${diffInMinutes} minute${
-          diffInMinutes !== 1 ? "s" : ""
-        } ago)`;
+        return `${timeString} (${diffInMinutes} minute${diffInMinutes !== 1 ? "s" : ""
+          } ago)`;
       } else {
-        return `${timeString} (${diffInHours} hour${
-          diffInHours !== 1 ? "s" : ""
-        } ago)`;
+        return `${timeString} (${diffInHours} hour${diffInHours !== 1 ? "s" : ""
+          } ago)`;
       }
     }
     // If email is from yesterday
@@ -875,28 +1336,47 @@ This email was downloaded from Gmail Clone
     }
   };
 
+  // After conversationData is available:
+  // Replace expandedIdx logic with multi-expand logic:
+  const [expandedSet, setExpandedSet] = useState<Set<number>>(() => new Set());
+  useEffect(() => {
+    if (Array.isArray(conversationData) && conversationData.length > 0) {
+      setExpandedSet(new Set([conversationData.length - 1]));
+    }
+  }, [conversationData]);
+
+  // Add at the top of the component:
+  const [detailsDropdownSet, setDetailsDropdownSet] = useState<Set<number>>(new Set());
+
+  // For the main ShowMoreMenuDropdown (not the label submenu):
+  // Add state for dropdown position
+  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(null);
+  const moreMenuButtonRef = useRef<HTMLButtonElement>(null);
+
+  const handleMoreMenuClick = () => {
+    if (moreMenuButtonRef.current) {
+      const rect = moreMenuButtonRef.current.getBoundingClientRect();
+      let top = rect.bottom;
+      let left = rect.left;
+      const dropdownHeight = 400; // estimate
+      if (top + dropdownHeight > window.innerHeight) {
+        top = Math.max(window.innerHeight - dropdownHeight - 16, 8);
+      }
+      setDropdownPosition({ top, left });
+    }
+    setShowMoreMenu((prev) => !prev);
+  };
+
+  // Render loading state
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center bg-background">
-        <div className="text-center">
-          <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center mb-4 mx-auto animate-pulse">
-            <svg
-              className="w-4 h-4 text-primary-foreground"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-            >
-              <path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z" />
-            </svg>
-          </div>
-          <div className="text-muted-foreground font-medium">
-            Loading email...
-          </div>
-        </div>
+        <Loader />
       </div>
     );
   }
 
-  if (!emailDetail) {
+  if (!mainMessage) {
     return (
       <div className="flex-1 flex items-center justify-center bg-background">
         <div className="text-center">
@@ -914,14 +1394,7 @@ This email was downloaded from Gmail Clone
     );
   }
 
-  const linkifyOptions = {
-    // Ensures links like www.example.com are converted to https://www.example.com
-    defaultProtocol: 'https',
-    target: {
-      url: '_blank'
-    }
-  };
-
+  // Render the conversation thread
   return (
     <>
       <div className="flex-1 flex flex-col bg-background h-full max-h-full relative z-0">
@@ -960,11 +1433,10 @@ This email was downloaded from Gmail Clone
                 disabled={updateEmailAttributesMutation.isPending}
               >
                 <Trash2
-                  className={`w-3 h-3 md:w-4 md:h-4 ${
-                    updateEmailAttributesMutation.isPending
-                      ? "text-gray-400"
-                      : "text-muted-foreground"
-                  }`}
+                  className={`w-3 h-3 md:w-4 md:h-4 ${updateEmailAttributesMutation.isPending
+                    ? "text-gray-400"
+                    : "text-muted-foreground"
+                    }`}
                 />
               </button>
 
@@ -979,542 +1451,273 @@ This email was downloaded from Gmail Clone
               </button>
 
               <button
-                onClick={handleStarClick}
+                onClick={() => handleStarClick(mainMessage)}
                 className="p-1 md:p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors flex-shrink-0"
-                title={emailDetail?.isStarred ? "Remove star" : "Add star"}
+                title={mainMessage?.isStarred ? "Remove star" : "Add star"}
               >
                 <Star
-                  className={`w-3 h-3 md:w-4 md:h-4 ${
-                    emailDetail?.isStarred
-                      ? "fill-yellow-400 text-yellow-400"
-                      : "text-muted-foreground"
-                  }`}
+                  className={`w-3 h-3 md:w-4 md:h-4 ${mainMessage?.isStarred
+                    ? "fill-yellow-400 text-yellow-400"
+                    : "text-muted-foreground"
+                    }`}
                 />
               </button>
 
+              <button
+                onClick={handleSummaryClick}
+                className="p-1 md:p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors flex-shrink-0"
+                title="Show conversation summary"
+              >
+                <BookOpen className="w-3 h-3 md:w-4 md:h-4 text-muted-foreground" />
+              </button>
+
+
               <div className="flex-1" />
 
-              <div className="relative" ref={moreMenuRef}>
+              <div className="relative" >
                 <button
-                  onClick={() => setShowMoreMenu(!showMoreMenu)}
+                  onClick={handleMoreMenuClick}
+                  ref={moreMenuButtonRef}
                   className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors"
                   title="More actions"
                 >
                   <MoreVertical className="w-4 h-4 text-muted-foreground" />
                 </button>
 
-                {showMoreMenu && (
-                  <div className="fixed md:right-16 right-6 top-25 w-64 bg-white dark:bg-black border rounded-lg shadow-lg z-[9999]">
-                    <div className="py-2">
-                      <button
-                        onClick={() => {
-                          handleSnoozeClick();
-                          setShowMoreMenu(false);
-                        }}
-                        className="w-full flex items-center gap-3 px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
-                      >
-                        <Clock className="w-4 h-4" />
-                        Snooze
-                      </button>
+                {showMoreMenu && typeof emailUniqueId === 'string' && (
+                  <ShowMoreMenuDropdown
+                    open={showMoreMenu}
+                    onClose={() => setShowMoreMenu(false)}
+                    handleSnoozeClick={handleSnoozeClick}
+                    handleAddToTasksClick={handleAddToTasksClick}
+                    handleLabelSelect={(labelUniqueId: string) => handleLabelSelect(labelUniqueId, mainMessage)}
+                    handleCreateLabel={handleCreateLabel}
+                    handleMuteClick={handleMuteClick}
+                    handlePrintClick={handlePrintClick}
+                    handleBlockClick={handleBlockClick}
+                    handleTranslateClick={(msg: any) => handleTranslateClick(msg)}
+                    handleDownloadClick={handleDownloadClick}
+                    labelSearchQuery={labelSearchQuery}
+                    setLabelSearchQuery={setLabelSearchQuery}
+                    labelsLoading={labelsLoading}
+                    apiLabels={apiLabels}
+                    assignLabelsMutation={assignLabelsMutation}
+                    removeLabelsMutation={removeLabelsMutation}
+                    showCreateLabel={showCreateLabel}
+                    setShowCreateLabel={setShowCreateLabel}
+                    newLabelName={newLabelName}
+                    setNewLabelName={setNewLabelName}
+                    createLabelMutation={createLabelMutation}
+                    onOpenFilters={onOpenFilters}
+                    setShowOriginalModal={setShowOriginalModal}
+                    mailId={mailId}
+                    mainMessage={mainMessage}
+                    emailUniqueId={emailUniqueId}
+                    sendMail_Id={mainMessage.sendMail_Id}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
 
-                      <button
-                        onClick={() => {
-                          handleAddToTasksClick();
-                          setShowMoreMenu(false);
-                        }}
-                        className="w-full flex items-center gap-3 px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
-                      >
-                        <CheckSquare className="w-4 h-4" />
-                        Add to Tasks
-                      </button>
 
-                      <button
-                        onClick={() => setShowMoreMenu(false)}
-                        className="w-full flex items-center gap-3 px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
-                      >
-                        <Calendar className="w-4 h-4" />
-                        Create event
-                      </button>
-
-                      <hr className="my-2" />
-
-                      <div
-                        className="relative"
-                        onMouseEnter={() => setShowLabelSubmenu(true)}
-                        onMouseLeave={() => setShowLabelSubmenu(false)}
-                      >
-                        <button className="w-full flex items-center justify-between px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors">
-                          <div className="flex items-center gap-3 dark:text-white hover:bg-accent">
-                            <Tag className="w-4 h-4" />
-                            Label as
+        {/* Email Content */}
+        <div className="flex flex-col h-full min-h-0" id="printable-email">
+          <div className="flex-1 overflow-y-auto px-6 pb-4">
+            <div className="mx-auto">
+              {/* Subject max-w-4xl */}
+              <div className="mb-4 mt-4">
+                <h1 className="text-2xl font-medium text-foreground">
+                  {mainMessage.subject}
+                </h1>
+              </div>
+              {/* Render all messages in the conversation */}
+              {conversationData.map((msg: any, idx: number) => {
+                // Debug log for parsedHeaders
+                console.log('DEBUG parsedHeaders', msg.parsedHeaders);
+                console.log('DEBUG parsedHeaders.from', msg.parsedHeaders?.from);
+                console.log('DEBUG msg.from', msg.from);
+                console.log('DEBUG msg.mailedby', msg.mailedby);
+                console.log('DEBUG msg.signedby', msg.signedby);
+                const isExpanded = expandedSet.has(idx);
+                const isDropdownOpen = detailsDropdownSet.has(idx);
+                // Compute fromDisplay for dropdown
+                const fromObj = msg.parsedHeaders?.from?.value?.[0];
+                const fromDisplay = fromObj
+                  ? (fromObj.name ? `${fromObj.name} <${fromObj.address}>` : fromObj.address)
+                  : msg.from;
+                return (
+                  <div key={msg.id + msg.date} className="mb-8 pb-4 border-b border-border last:border-b-0">
+                    {/* Header (always visible, clickable, styled like before) */}
+                    <div className="p-4 bg-gray-50 rounded-lg flex items-center justify-between">
+                      <div className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer" onClick={() => {
+                        setExpandedSet(prev => {
+                          const next = new Set(prev);
+                          if (next.has(idx)) next.delete(idx);
+                          else next.add(idx);
+                          return next;
+                        });
+                      }}>
+                        <div className="w-8 h-8 bg-[#ffa184] rounded-full flex items-center justify-center text-white font-medium text-sm flex-shrink-0">
+                          {getAvatarLetter(msg.from, msg.sender)}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="font-medium text-foreground truncate">
+                            <span className="text-muted-foreground">from </span>
+                            {getDisplayName(msg.from, msg.from || msg.sender)}
                           </div>
-                          <ChevronRight className="w-4 h-4" />
+                          <div className="text-sm text-muted-foreground flex items-center gap-1">
+                            <span className="text-muted-foreground">to </span>
+                            {msg.to}
+                            {/* Three-dot menu for dropdown, beside 'to' */}
+                            <button className="ml-1" onClick={e => {
+                              e.stopPropagation(); setLabelTargetMessage(msg); setShowMoreMenuIdx(idx); setDetailsDropdownSet(prev => {
+                                const next = new Set(prev);
+                                if (next.has(idx)) next.delete(idx);
+                                else next.add(idx);
+                                return next;
+                              });
+                            }}>
+                              <MoreHorizontal className="w-5 h-5 text-gray-500" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+                        <div className="text-sm text-muted-foreground hidden sm:block">
+                          {msg.date ? formatRelativeTime(new Date(msg.date)) : "Unknown date"}
+                        </div>
+                        <div className="text-xs text-muted-foreground sm:hidden">
+                          {msg.date ? formatRelativeTime(new Date(msg.date)) : "Unknown"}
+                        </div>
+                        {/* Star button for idx > 0 */}
+                        {idx > 0 && (
+                          <button
+                            onClick={e => {
+                              e.stopPropagation();
+                              handleStarClick(msg);
+                            }}
+                            className="p-1 md:p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors flex-shrink-0"
+                            title={msg.isStarred ? "Remove star" : "Add star"}
+                          >
+                            <Star
+                              className={`w-3 h-3 md:w-4 md:h-4 ${msg.isStarred
+                                ? "fill-yellow-400 text-yellow-400"
+                                : "text-muted-foreground"
+                                }`}
+                            />
+                          </button>
+                        )}
+                        {/* Expand/collapse chevron */}
+                        <button className="ml-2" onClick={e => {
+                          e.stopPropagation(); setExpandedSet(prev => {
+                            const next = new Set(prev);
+                            if (next.has(idx)) next.delete(idx);
+                            else next.add(idx);
+                            return next;
+                          });
+                        }}>
+                          {isExpanded ? <ChevronUp className="w-4 h-4 text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-500" />}
                         </button>
-
-                        {showLabelSubmenu && (
-                          <div className="absolute sm:fixed sm:right-72 sm:top-20 left-0 sm:left-auto mt-2 sm:mt-0 w-64 bg-white dark:bg-black border rounded-lg shadow-lg z-[10000]">
-                            <div className="p-3">
-                              <div className="text-sm font-medium dark:text-white mb-2">
-                                Label as:
-                              </div>
-                              {/* Search bar */}
-                              <div className="">
-                                <div className="relative">
-                                  <input
-                                    type="text"
-                                    placeholder="Search labels..."
-                                    value={labelSearchQuery}
-                                    onChange={(e) =>
-                                      setLabelSearchQuery(e.target.value)
-                                    }
-                                    className="w-full pl-3 pr-8 py-1.5 text-sm border-b-2 border-[#ffa184] bg-transparent dark:text-white rounded-md focus:outline-none"
-                                  />
-                                  <svg
-                                    className="absolute right-2 top-1.5 w-4 h-4 text-gray-400"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    viewBox="0 0 24 24"
-                                  >
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth={2}
-                                      d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-                                    />
-                                  </svg>
-                                </div>
-                              </div>
-                              {/* Label options */}
-                              <div className="space-y-1 mb-3">
-                                {(labelsLoading || emailLabelsLoading) && (
-                                  <div className="text-sm text-gray-500 px-2">
-                                    Loading labels...
-                                  </div>
-                                )}
-
-                                {!labelsLoading && !emailLabelsLoading && (!Array.isArray(apiLabels) || apiLabels.length === 0) && (
-                                  <div className="text-sm text-gray-500 px-2">
-                                    No labels found.
-                                  </div>
-                                )}
-
-                                {!labelsLoading && !emailLabelsLoading && Array.isArray(apiLabels) &&
-                                  apiLabels.map((label) => {
-                                    const isChecked = selectedLabels.includes(label.labelUniqueId);
-                                    const isUpdating = assignLabelsMutation.isPending || removeLabelsMutation.isPending;
-                                    console.log('Rendering label:', label, 'isChecked:', isChecked, 'selectedLabels:', selectedLabels);
-                                    return (
-                                      <label
-                                        key={label.id}
-                                        className="flex items-center gap-2 px-2 py-1 hover:bg-accent rounded cursor-pointer"
-                                      >
-                                        <input
-                                          type="checkbox"
-                                          className="w-4 h-4 accent-[#ffa184]"
-                                          checked={isChecked}
-                                          disabled={isUpdating}
-                                          onChange={() => {
-                                            console.log('Checkbox changed for label', label.labelUniqueId, 'current checked state:', isChecked);
-                                            handleLabelSelect(label.labelUniqueId);
-                                          }}
-                                        />
-                                        <span className="text-sm dark:text-white">
-                                          {label.name}
-                                        </span>
-                                      </label>
-                                    );
-                                  })}
-                              </div>
-                              {/* Action buttons */}
-                              <div className="border-t pt-2 space-y-1">
-                                {!showCreateLabel ? (
-                                  <button
-                                    onClick={() => setShowCreateLabel(true)}
-                                    className="w-full text-left px-2 py-1 text-sm dark:text-white hover:bg-accent rounded"
-                                  >
-                                    Create new
-                                  </button>
-                                ) : (
-                                  <div className="px-2 py-2 space-y-2">
-                                    <input
-                                      type="text"
-                                      placeholder="Enter label name"
-                                      value={newLabelName}
-                                      onChange={(e) =>
-                                        setNewLabelName(e.target.value)
-                                      }
-                                      className="w-full px-2 py-1 text-sm border rounded bg-background text-foreground"
-                                      onKeyPress={(e) =>
-                                        e.key === "Enter" && handleCreateLabel()
-                                      }
-                                      autoFocus
-                                    />
-                                    <div className="flex space-x-2">
-                                      <button
-                                        onClick={handleCreateLabel}
-                                        disabled={createLabelMutation.isPending}
-                                        className="flex-1 px-2 py-1 text-xs text-primary-foreground rounded bg-[#ffa184] hover:bg-[#fd9474] disabled:opacity-50"
-                                      >
-                                        {createLabelMutation.isPending
-                                          ? "Creating..."
-                                          : "Create"}
-                                      </button>
-                                      <button
-                                        onClick={() => {
-                                          setShowCreateLabel(false);
-                                          setNewLabelName("");
-                                        }}
-                                        className="px-2 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
-                                      >
-                                        Cancel
-                                      </button>
-                                    </div>
-                                  </div>
-                                )}
-                                <button
-                                  onClick={() => {
-                                    setShowMoreMenu(false);
-                                    // Create and dispatch a custom event to open settings with Labels tab
-                                    window.dispatchEvent(
-                                      new CustomEvent("openSettingsWithTab", {
-                                        detail: { tab: "Labels" },
-                                      })
-                                    );
-                                  }}
-                                  className="w-full text-left px-2 py-1 text-sm dark:text-white hover:bg-accent rounded"
-                                >
-                                  Manage labels
-                                </button>
-                              </div>
-                            </div>
+                        {/* Only show three-dot menu in header for idx > 0 */}
+                        {idx > 0 && (
+                          <div className="relative">
+                            <button className="ml-1" onClick={e => { e.stopPropagation(); setShowMoreMenuIdx(prev => prev === idx ? null : idx); }}>
+                              <MoreVertical className="w-5 h-5 text-gray-500" />
+                            </button>
+                            {showMoreMenuIdx === idx && (
+                              <ShowMoreMenuDropdown
+                                key={msg.emailUniqueId || msg.sendMail_Id || idx}
+                                open={showMoreMenuIdx === idx}
+                                onClose={() => setShowMoreMenuIdx(null)}
+                                handleSnoozeClick={handleSnoozeClick}
+                                handleAddToTasksClick={handleAddToTasksClick}
+                                handleLabelSelect={(labelUniqueId: string) => handleLabelSelect(labelUniqueId, msg)}
+                                handleCreateLabel={handleCreateLabel}
+                                handleMuteClick={handleMuteClick}
+                                handlePrintClick={handlePrintClick}
+                                handleBlockClick={handleBlockClick}
+                                handleTranslateClick={(msg: any) => handleTranslateClick(msg)}
+                                handleDownloadClick={handleDownloadClick}
+                                labelSearchQuery={labelSearchQuery}
+                                setLabelSearchQuery={setLabelSearchQuery}
+                                labelsLoading={labelsLoading}
+                                apiLabels={apiLabels}
+                                assignLabelsMutation={assignLabelsMutation}
+                                removeLabelsMutation={removeLabelsMutation}
+                                showCreateLabel={showCreateLabel}
+                                setShowCreateLabel={setShowCreateLabel}
+                                newLabelName={newLabelName}
+                                setNewLabelName={setNewLabelName}
+                                createLabelMutation={createLabelMutation}
+                                onOpenFilters={onOpenFilters}
+                                setShowOriginalModal={setShowOriginalModal}
+                                mailId={mailId}
+                                mainMessage={msg}
+                                emailUniqueId={msg.emailUniqueId || msg.id || ""}
+                                sendMail_Id={msg.sendMail_Id}
+                              />
+                            )}
                           </div>
                         )}
                       </div>
-
-                      <button
-                        onClick={() => {
-                          setShowMoreMenu(false);
-                          onOpenFilters?.();
-                        }}
-                        className="w-full flex items-center gap-3 px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
-                      >
-                        <Filter className="w-4 h-4" />
-                        Filter messages like these
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          handleMuteClick();
-                          setShowMoreMenu(false);
-                        }}
-                        className="w-full flex items-center gap-3 px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
-                      >
-                        <VolumeX className="w-4 h-4" />
-                        Mute
-                      </button>
-
-                      <hr className="my-2" />
-
-                      <button
-                        onClick={() => {
-                          handlePrintClick();
-                          setShowMoreMenu(false);
-                        }}
-                        className="w-full flex items-center gap-3 px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
-                      >
-                        <Printer className="w-4 h-4" />
-                        Print
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          handleBlockClick();
-                          setShowMoreMenu(false);
-                        }}
-                        className="w-full flex items-center gap-3 px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
-                      >
-                        <Shield className="w-4 h-4" />
-                        Block sender
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          handleTranslateClick();
-                          setShowMoreMenu(false);
-                        }}
-                        className="w-full flex items-center gap-3 px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
-                      >
-                        <Languages className="w-4 h-4" />
-                        Translate message
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          handleDownloadClick();
-                          setShowMoreMenu(false);
-                        }}
-                        className="w-full flex items-center gap-3 px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
-                      >
-                        <Download className="w-4 h-4" />
-                        Download message
-                      </button>
-                      <button
-                        onClick={() => {
-                          setShowOriginalModal(true);
-                          setShowMoreMenu(false);
-                          window.open(`/mailbox/m/${mailId}/${emailDetail?.mailbox || 'inbox'}/email/${emailUniqueId}/original`, '_blank');
-                        }}
-                        className="w-full flex items-center gap-3 px-4 py-2 text-sm dark:text-white hover:bg-accent transition-colors"
-                      >
-                        <FileText className="w-4 h-4" />
-                        Show original
-                      </button>
                     </div>
+                    {/* Dropdown with details: for idx === 0, show if open from toolbar; for others, from header */}
+                    {isDropdownOpen && (
+                      <div className="bg-gray-50 border-l border-r border-b border-gray-100 rounded p-4 mb-2 text-sm">
+                        <div><b className="text-muted-foreground">from:</b> {fromDisplay}</div>
+                        <div><b className="text-muted-foreground">to:</b> {msg.to}</div>
+                        <div><b className="text-muted-foreground">date:</b> {msg.date ? new Date(msg.date).toLocaleString() : ""}</div>
+                        <div><b className="text-muted-foreground">subject:</b> {msg.subject}</div>
+                        {msg.mailedby && <div><b className="text-muted-foreground">mailed-by:</b> {msg.mailedby}</div>}
+                        {msg.signedby && <div><b className="text-muted-foreground">signed-by:</b> {msg.signedby}</div>}
+                        {/* Add security, importance, etc. as needed */}
+                      </div>
+                    )}
+                    {/* Body (only if expanded) */}
+                    {isExpanded && (
+                      <div className="max-w-none text-foreground leading-relaxed text-base email-body px-2 py-4">
+                        <div
+                          dangerouslySetInnerHTML={{
+                            __html: msg.parsedHtml || msg.content || msg.parsedText || "",
+                          }}
+                        />
+                        {/* Attachments, etc. can go here */}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                );
+              })}
+            </div>
+          </div>
+          {/* Footer always at the bottom of the email details area */}
+          <div className="border-t bg-white dark:bg-black z-10">
+            <div className="mx-auto px-2 lg:px-2 py-2 flex gap-2 justify-start">
+              <button
+                onClick={handleReplyClick}
+                className="flex items-center gap-1 px-2 py-1 text-xs bg-[#ffa184] hover:bg-[#fd9474] text-white rounded transition-colors"
+              >
+                <Reply className="w-3 h-3" />
+                Reply
+              </button>
+              <button
+                onClick={handleReplyAllClick}
+                className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
+              >
+                <ReplyAll className="w-3 h-3" />
+                Reply all
+              </button>
+              <button
+                onClick={handleForwardClick}
+                className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
+              >
+                <Forward className="w-3 h-3" />
+                Forward
+              </button>
             </div>
           </div>
         </div>
-
-
-      {/* Email Content */}
-      <div id="printable-email" className="flex-1 overflow-y-auto px-6 pb-16">
-        <div className="mx-auto">
-          {/* Subject max-w-4xl */}
-          <div className="mb-4 mt-4">
-            <h1 className="text-2xl font-medium text-foreground">
-              {emailDetail.subject}
-            </h1>
-          </div>
-
-          {/* Email Header */}
-          <div className="border rounded-lg mb-6">
-            {/* Collapsed Header */}
-            <div
-              className="flex items-center justify-between p-4 hover:bg-accent cursor-pointer"
-              onClick={() => setShowDetails(!showDetails)}
-            >
-              <div className="flex items-center gap-3 min-w-0 flex-1">
-                <div className="w-8 h-8 bg-[#ffa184] rounded-full flex items-center justify-center text-white font-medium text-sm flex-shrink-0">
-                  {getAvatarLetter(emailDetail.from, emailDetail.sender)}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="font-medium text-foreground truncate">
-                    <span className="text-muted-foreground">from </span>
-                    {(
-                      getDisplayName(
-                        emailDetail.from,
-                        emailDetail.from || emailDetail.sender
-                      ) || ""
-                    ).replace(/["']/g, "")}
-                  </div>
-                  {/* <div className="text-sm text-muted-foreground">
-                    <span className="text-muted-foreground">to </span>
-                    {emailDetail.to}
-                  </div> */}
-                </div>
-              </div>
-              <div className="flex items-center gap-2 flex-shrink-0 ml-2">
-                <div className="text-sm text-muted-foreground hidden sm:block">
-                  {emailDetail.date
-                    ? formatRelativeTime(new Date(emailDetail.date))
-                    : "Unknown date"}
-                </div>
-                <div className="text-xs text-muted-foreground sm:hidden">
-                  {emailDetail.date
-                    ? formatRelativeTime(new Date(emailDetail.date))
-                    : "Unknown"}
-                </div>
-                {showDetails ? (
-                  <ChevronUp className="w-4 h-4 text-gray-500" />
-                ) : (
-                  <ChevronDown className="w-4 h-4 text-gray-500" />
-                )}
-              </div>
-            </div>
-            {/* Expanded Details */}
-            {showDetails && (
-              <div className="px-4 pb-4 border-t bg-accent pt-2">
-                <div className="grid grid-cols-[120px_1fr] gap-y-2 gap-x-4 text-sm">
-                  {/* Only show important headers */}
-                  {emailDetail.headers &&
-                    Object.entries(emailDetail.headers)
-                      .filter(([key]) =>
-                        [
-                          "from",
-                          "date",
-                          "subject",
-                          "to",
-                          "content-type",
-                          "reply-to",
-                          "security",
-                          "mailed-by",
-                          "signed-by",
-                        ].includes(key.toLowerCase())
-                      )
-                      .map(([key, value]) => (
-                        <React.Fragment key={key}>
-                          <div className="text-muted-foreground font-medium">
-                            {key}:
-                          </div>
-                          <div className="text-foreground break-all">
-                            {Array.isArray((value as any)?.value)
-                              ? (value as any).value
-                                  .map((v: any) => v.address || v.name)
-                                  .join(", ")
-                              : typeof value === "object" &&
-                                value &&
-                                Array.isArray(value as any)
-                              ? (value as any).join(", ")
-                              : String((value as any)?.value || value)}
-                          </div>
-                        </React.Fragment>
-                      ))}
-                  {emailDetail.mailedby && (
-                    <React.Fragment key="mailedBy">
-                      <div className="text-muted-foreground font-medium">
-                        mailed-by:
-                      </div>
-                      <div className="text-foreground break-all">
-                        {emailDetail.mailedby}
-                      </div>
-                    </React.Fragment>
-                  )}
-                  {emailDetail.signedby && (
-                    <React.Fragment key="signedBy">
-                      <div className="text-muted-foreground font-medium">
-                        signed-by:
-                      </div>
-                      <div className="text-foreground break-all">
-                        {emailDetail.signedby}
-                      </div>
-                    </React.Fragment>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Email Body (HTML preferred, fallback to text) */}
-          {emailDetail.html ? (
-            <div className="max-w-none text-foreground leading-relaxed text-base">
-              <div
-                dangerouslySetInnerHTML={{
-                  __html: fixLinksInHtml(cleanEmailHtml(emailDetail.html)),
-                }}
-              />
-            </div>
-          ) : (
-            <div className="max-w-none text-foreground leading-relaxed text-base">
-              <div
-                dangerouslySetInnerHTML={{
-                  __html: linkifyHtml(
-                    preprocessLinks(
-                      (emailDetail.text || '')
-                        // Collapse 3+ newlines to 2
-                        .replace(/\n{3,}/g, '\n\n')
-                        // Convert newlines to <br>
-                        .replace(/\n/g, '<br>')
-                    ),
-                    linkifyOptions
-                  ),
-                }}
-              />
-            </div>
-          )}
-
-          {/* Attachments */}
-          {emailDetail.attachments && emailDetail.attachments.length > 0 && (
-            <div className="mt-6 p-4 border rounded-lg bg-accent w-full sm:w-1/2 md:w-1/3 lg:w-1/4 max-w-xs">
-              <h3 className="text-sm font-medium dark:text-white mb-3">
-                Attachments ({emailDetail.attachments.length})
-              </h3>
-              <div className="space-y-2">
-                {emailDetail.attachments.map(
-                  (attachment: any, index: number) => {
-                    const isImage =
-                      attachment.contentType &&
-                      attachment.contentType.startsWith("image/");
-                    const isVideo =
-                      attachment.contentType &&
-                      attachment.contentType.startsWith("video/");
-                    const handleAttachmentClick = () => {
-                      if (isImage || isVideo) {
-                        setModalAttachment(attachment);
-                        setShowAttachmentModal(true);
-                      }
-                    };
-                    return (
-                      <div
-                        key={index}
-                        className="flex items-center gap-3 p-2 bg-white dark:bg-black rounded border hover:bg-gray-50 cursor-pointer"
-                        onClick={handleAttachmentClick}
-                      >
-                        <div className="w-8 h-8 bg-[#ffa184] rounded flex items-center justify-center">
-                          📎
-                        </div>
-                        <div className="flex-1">
-                          <div
-                            className="text-sm font-medium dark:text-white overflow-hidden whitespace-nowrap text-ellipsis max-w-[220px] block"
-                            title={attachment.filename}
-                          >
-                            {attachment.filename}
-                          </div>
-                          <div className="text-xs text-gray-500">
-                            {attachment.size
-                              ? `${(attachment.size / 1024).toFixed(1)} KB`
-                              : ""}
-                          </div>
-                          <a
-                            href={`data:${attachment.contentType};base64,${attachment.content}`}
-                            download={attachment.filename}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-[#ffa184] underline text-xs block mt-1"
-                            onClick={(e) => e.stopPropagation()} // Prevent modal from opening when clicking download
-                          >
-                            Download
-                          </a>
-                        </div>
-                      </div>
-                    );
-                  }
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Action Buttons - Fixed within email container max-w-4xl */}
-      <div className="absolute bottom-0 left-0 right-0 border-t bg-white dark:bg-black z-10">
-        <div className="mx-auto px-2 lg:px-2 py-2">
-          <div className="flex gap-2">
-            <button
-              onClick={handleReplyClick}
-              className="flex items-center gap-1 px-2 py-1 text-xs bg-[#ffa184] hover:bg-[#fd9474] text-white rounded transition-colors"
-            >
-              <Reply className="w-3 h-3" />
-              Reply
-            </button>
-            <button
-              onClick={handleReplyAllClick}
-              className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
-            >
-              <ReplyAll className="w-3 h-3" />
-              Reply all
-            </button>
-            <button
-              onClick={handleForwardClick}
-              className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
-            >
-              <Forward className="w-3 h-3" />
-              Forward
-            </button>
-          </div>
-        </div>
-      </div>
       </div>
       {showAttachmentModal && modalAttachment && (
         <div className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm bg-black bg-opacity-70">
@@ -1544,3 +1747,4 @@ This email was downloaded from Gmail Clone
     </>
   );
 }
+

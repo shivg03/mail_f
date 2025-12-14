@@ -40,6 +40,16 @@ interface EmailToolbarProps {
   mailId: string;
 }
 
+// Utility function to get the correct payload for updating mail attributes
+function getMailUpdatePayload(message: any, updates: any) {
+  if (message.sendMail_Id) {
+    return { sendmail_id: message.sendMail_Id, ...updates };
+  } else if (message.emailUniqueId) {
+    return { emailUniqueId: message.emailUniqueId, ...updates };
+  }
+  return updates;
+}
+
 export default function EmailToolbar({ selectedCount, onSelectAll, onMainCheckboxToggle, onShowKeyboard, currentCategory, selectedEmails, onRefresh, currentPage, totalPages, emailsPerPage, totalEmails, onPageChange, onUnmuteEmails, onMuteEmails, onUnsnoozeEmails, onBulkMarkAsRead, onRemoveFromTasks, onUnspamEmails, onUnarchiveEmails, mailId }: EmailToolbarProps) {
   const { t } = useTranslation();
   const [showSelectDropdown, setShowSelectDropdown] = useState(false);
@@ -112,11 +122,7 @@ export default function EmailToolbar({ selectedCount, onSelectAll, onMainCheckbo
       : [];
     await Promise.all(
       emailsToUpdate.map(email =>
-        apiRequest("POST", "/email/updateEmail", {
-          emailUniqueId: (email as any).emailUniqueId,
-          seen: markAsRead,
-          __headers: headers,
-        })
+        apiRequest("POST", "/email/updateEmail", getMailUpdatePayload(email, { seen: markAsRead, __headers: headers }))
       )
     );
     queryClient.invalidateQueries(["/email/allmails", mailId, currentCategory] as any);
@@ -129,12 +135,36 @@ export default function EmailToolbar({ selectedCount, onSelectAll, onMainCheckbo
       ? emails.filter(email => emailIds.includes(email.emailUniqueId))
       : [];
     await Promise.all(
-      emailsToUpdate.map(email =>
-        updateEmailAttributesMutation.mutateAsync({
-          emailUniqueId: (email as any).emailUniqueId,
-          isStarred: star,
-        })
-      )
+      emailsToUpdate.map(async email => {
+        // Star/unstar the main message
+        await updateEmailAttributesMutation.mutateAsync(getMailUpdatePayload(email, { isStarred: star }));
+
+        // If un-starring, also unstar all conversation messages
+        if (!star && email.threadId && mailId) {
+          try {
+            const authtoken = localStorage.getItem("authtoken");
+            const headers = authtoken ? { Authorization: `Bearer ${authtoken}` } : {};
+            const response = await apiRequest("POST", "/mails/conversation", {
+              mail_id: mailId,
+              threadId: email.threadId,
+              __headers: headers,
+            });
+            const conversationArr = response.data.conversation;
+            if (Array.isArray(conversationArr)) {
+              await Promise.all(
+                conversationArr.map(async (msg: any) => {
+                  if (msg.isStarred) {
+                    await updateEmailAttributesMutation.mutateAsync(getMailUpdatePayload(msg, { isStarred: false }));
+                  }
+                })
+              );
+            }
+            queryClient.invalidateQueries({ queryKey: ["/mails/conversation", mailId, email.threadId] });
+          } catch (err) {
+            console.error("Failed to unstar conversation messages:", err);
+          }
+        }
+      })
     );
   };
 

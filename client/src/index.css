@@ -230,12 +230,31 @@ optgroup {
     @apply border-border;
   }
 
+  html {
+    overflow-y: scroll !important;
+    overflow-x: hidden;
+    scrollbar-gutter: stable;
+  }
+
   body {
     @apply font-sans antialiased;
     background: hsl(var(--background));
     color: hsl(var(--foreground));
     min-height: 100vh;
     font-size: var(--gmail-font-size);
+    width: 100% !important;
+    overflow-y: visible !important;
+    overflow-x: hidden !important;
+    position: relative !important;
+  }
+  
+  body[data-scroll-locked] {
+    overflow-y: visible !important;
+    overflow-x: hidden !important;
+    margin-right: 0 !important;
+    padding-right: 0 !important;
+    position: relative !important;
+    width: 100% !important;
   }
   
   /* Apply global font size and text color to all text elements */
@@ -243,6 +262,7 @@ optgroup {
     font-size: var(--gmail-font-size);
     color: var(--gmail-text-color);
   }
+  
   
   /* Override specific text size classes to use the global font size */
   .text-sm {
@@ -338,6 +358,60 @@ optgroup {
 
 .fade-in {
   animation: fadeIn 0.3s ease-out;
+}
+
+/* MailX Logo Animation */
+@keyframes mailxStrokeIn {
+  0% {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  60% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes fillFromLeft {
+  0% {
+    clip-path: inset(0 100% 0 0);
+  }
+  100% {
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+.mailx-animate {
+  position: relative;
+  display: inline-block;
+  -webkit-text-stroke: 0.5px rgba(255, 161, 132, 0.6);
+  color: transparent;
+  animation: mailxStrokeIn 0.8s ease-out forwards;
+  transition: all 0.3s ease;
+}
+
+.mailx-animate::before {
+  content: attr(data-text);
+  position: absolute;
+  left: 0;
+  top: 0;
+  background: linear-gradient(90deg, #ffa184);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  -webkit-text-stroke: 0px;
+  clip-path: inset(0 100% 0 0);
+  animation: fillFromLeft 1.2s ease-out 0.5s forwards;
+  transition: all 0.3s ease;
+}
+
+.mailx-animate:hover {
+  transform: translateY(-2px);
+  filter: drop-shadow(0 4px 8px rgba(255, 161, 132, 0.4));
 }
 
 /* Email row hover effects */

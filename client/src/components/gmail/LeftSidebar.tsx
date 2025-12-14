@@ -524,6 +524,18 @@ export default function LeftSidebar({
     }
   };
 
+  // After fetching allEmails and mailId
+  const userEmail = allEmails[0]?.to || "";
+
+  // When rendering or opening ComposeModal:
+  // <ComposeModal
+  //   isOpen={isComposeOpen}
+  //   onClose={closeCompose}
+  //   mail_Id={mailId}
+  //   from={userEmail}
+  //   // ...other props
+  // />
+
   return (
     <aside
       className={`bg-card transition-all duration-300 ${
@@ -562,7 +574,7 @@ export default function LeftSidebar({
 
       {isExpanded && (
         <div className="flex-1 overflow-y-auto">
-          <nav className="space-y-1 pt-4 md:pt-0 w-full pb-4">
+          <nav className="pt-4 md:pt-0 w-full pb-4">
             {/* Mobile-only: Primary and Promotion filters */}
             {/* {currentView === "inbox" && onCategoryChange && (
               <div className="md:hidden mb-4 w-full">
@@ -665,7 +677,7 @@ export default function LeftSidebar({
             </div>
 
             {moreExpanded && (
-              <div className="pl-4 space-y-1">
+              <div className="pl-4">
                 {moreItems
                   .filter((item) => systemLabelsVisibility[item.view] !== false)
                   .map((item, index) => {
@@ -710,7 +722,7 @@ export default function LeftSidebar({
             )}
 
             {/* Mobile: Settings in hamburger menu */}
-            <div className="mt-6 md:hidden">
+            <div className=" md:hidden">
               <div
                 className="sidebar-item flex items-center space-x-3 px-6 py-3 cursor-pointer transition-all duration-200 hover:bg-accent group"
                 onClick={onShowSettings}
@@ -740,7 +752,7 @@ export default function LeftSidebar({
               </div>
             </div>
 
-            <div className="mt-6">
+            <div className="">
               <div className="flex items-center justify-between px-6 py-3">
                 <span className="text-xs text-muted-foreground font-medium uppercase tracking-wide">
                   {t.labels}
@@ -805,7 +817,7 @@ export default function LeftSidebar({
             </div>
 
             {editingLabel && (
-              <div className="mx-2 mb-2 px-2 py-2 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700 rounded">
+              <div className="mx-2 mb-2 px-2 py-2 bg-[#ffa184]/20 dark:[#ffa184]/20 border border-[#ffa184] dark:border-[#ffa184] rounded">
                 <div className="space-y-2">
                   <input
                     type="text"
@@ -820,7 +832,7 @@ export default function LeftSidebar({
                     <button
                       onClick={handleEditLabel}
                       disabled={updateLabelMutation.isPending}
-                      className="flex-1 px-2 py-1 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90 disabled:opacity-50"
+                      className="flex-1 px-2 py-1 text-xs bg-[#ffa184] text-primary-foreground rounded hover:bg-[#ffa184]/90 disabled:opacity-50"
                     >
                       {updateLabelMutation.isPending ? "Saving..." : "Save"}
                     </button>
@@ -846,7 +858,7 @@ export default function LeftSidebar({
                   (label.showIfUnread && hasUnreadEmails(label.name))
               )
               .map((label: Label, index: number) => {
-                const isActive = currentView === `label:${label.name}`;
+                const isActive = currentView === `label:${label.labelUniqueId}`;
                 const isMenuOpen = activeLabelMenu === label.name;
 
                 const labelColor = label.color;
@@ -879,7 +891,7 @@ export default function LeftSidebar({
                     <div
                       className="flex items-center space-x-3 flex-1 cursor-pointer"
                       title={label.name}
-                      onClick={() => onViewChange(`label:${label.name}`)}
+                      onClick={() => onViewChange(`label:${label.labelUniqueId}`)}
                     >
                       <IconComponent
                         name="tag"
@@ -1046,7 +1058,7 @@ export default function LeftSidebar({
             {showHiddenLabels &&
               apiLabels.filter((label: Label) => !label.isVisible).length >
                 0 && (
-                <div className="mt-4">
+                <div className="">
                   <div className="px-6 py-2">
                     <span className="text-xs text-muted-foreground font-medium uppercase tracking-wide">
                       Hidden Labels
@@ -1055,7 +1067,7 @@ export default function LeftSidebar({
                   {apiLabels
                     .filter((label: Label) => !label.isVisible)
                     .map((label: Label, index: number) => {
-                      const isActive = currentView === `label:${label.name}`;
+                      const isActive = currentView === `label:${label.labelUniqueId}`;
                       const isMenuOpen = activeLabelMenu === label.name;
 
                       // Convert Tailwind color class to custom styl
@@ -1092,7 +1104,7 @@ export default function LeftSidebar({
                           <div
                             className="flex items-center space-x-3 flex-1 cursor-pointer"
                             title={`${label.name} (hidden)`}
-                            onClick={() => onViewChange(`label:${label.name}`)}
+                            onClick={() => onViewChange(`label:${label.labelUniqueId}`)}
                           >
                             <IconComponent
                               name="tag"
